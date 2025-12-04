@@ -1,0 +1,27 @@
+# Ignore SQLite database files
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Ignore the HealthFit ingestion data directory
+data/
+data/*
+
+# Ignore any raw FIT exports if you ever drop them in the project
+*.fit
+
+# Ignore environment variables
+.env
+
+# Ignore Python cache junk
+__pycache__/
+*.pyc
+*.pyo
+
+# Ignore Streamlit cache (very large)
+.streamlit/
+
+# Ignore virtual environment folders if you ever create one
+venv/
+env/

@@ -1,0 +1,7 @@
+data/
+*.db
+*.sqlite
+*.pyc
+.DS_Store
+__pycache__/
+.env
