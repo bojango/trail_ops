@@ -1,0 +1,84 @@
+const DEFAULT_BASE = "http://127.0.0.1:8000";
+
+export function apiBase() {
+  // Allow override via Vite env, but keep local-first default.
+  return import.meta.env?.VITE_API_BASE || DEFAULT_BASE;
+}
+
+function apiHeaders(extra = {}) {
+  // Optional API key support.
+  // Backend: set TRAILOPS_API_KEY
+  // Frontend: set VITE_API_KEY (in frontend/.env.local)
+  const key = import.meta.env?.VITE_API_KEY || import.meta.env?.VITE_TRAILOPS_API_KEY;
+  return {
+    ...(key ? { "X-API-Key": key } : {}),
+    ...extra,
+  };
+}
+
+export async function fetchHealth() {
+  const r = await fetch(`${apiBase()}/health`, { method: "GET" });
+  if (!r.ok) throw new Error(`health ${r.status}`);
+  return await r.json();
+}
+
+export async function fetchWorkouts({ start, end, sport = "all", limit = 300 } = {}) {
+  const params = new URLSearchParams();
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  if (sport && sport !== "all") params.set("sport", sport);
+  if (limit) params.set("limit", String(limit));
+
+  const url = `${apiBase()}/workouts?${params.toString()}`;
+  const r = await fetch(url, { method: "GET", headers: apiHeaders() });
+  if (!r.ok) throw new Error(`workouts ${r.status}`);
+  return await r.json();
+}
+
+export async function fetchSparklines({ workoutIds = [], maxPoints = 60, metricMode = "auto" } = {}) {
+  const r = await fetch(`${apiBase()}/workouts/sparklines`, {
+    method: "POST",
+    headers: apiHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({
+      workout_ids: workoutIds,
+      max_points: maxPoints,
+      metric_mode: metricMode,
+    }),
+  });
+  if (!r.ok) throw new Error(`sparklines ${r.status}`);
+  return await r.json();
+}
+
+export async function fetchWorkoutContext(workoutId) {
+  const wid = String(workoutId);
+  const r = await fetch(`${apiBase()}/workouts/${encodeURIComponent(wid)}/context`, {
+    method: "GET",
+    headers: apiHeaders(),
+  });
+  if (!r.ok) throw new Error(`workout context ${r.status}`);
+  return await r.json();
+}
+
+
+export async function fetchWorkoutMapPoints(workoutId, { level = 1, max_points = 3000, include_markers = true } = {}) {
+  const params = new URLSearchParams();
+  params.set("level", String(level));
+  params.set("max_points", String(max_points));
+  params.set("include_markers", include_markers ? "true" : "false");
+  const url = `${apiBase()}/workouts/${workoutId}/map-points?${params.toString()}`;
+  const r = await fetch(url, { method: "GET", headers: apiHeaders() });
+  if (!r.ok) throw new Error(`map_points ${r.status}`);
+  return await r.json();
+}
+
+export async function fetchPeaksDashboard({ range = '30d', cls = 'wainwrights' } = {}) {
+  const url = new URL(apiBase() + '/peaks/dashboard');
+  if (range) url.searchParams.set('range', range);
+  if (cls) url.searchParams.set('cls', cls);
+  const res = await fetch(url.toString(), { headers: apiHeaders() });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    throw new Error(`Peaks dashboard failed (${res.status}): ${txt || res.statusText}`);
+  }
+  return res.json();
+}

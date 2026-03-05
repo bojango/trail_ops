@@ -1,0 +1,282 @@
+from __future__ import annotations
+
+import math
+from typing import Optional, Tuple
+
+import numpy as np
+import pandas as pd
+
+# Import compatibility:
+# - When run via Streamlit from project root, absolute 'app.*' may work.
+# - When run via 'python -c' or scripts, we often need local package imports.
+try:
+    from app.db.database import get_connection  # type: ignore
+except Exception:  # pragma: no cover
+    from db.database import get_connection  # type: ignore
+
+try:
+    from app.analysis.gap import compute_grade_pct, gap_from_speed  # type: ignore
+except Exception:  # pragma: no cover
+    from analysis.gap import compute_grade_pct, gap_from_speed  # type: ignore
+
+
+M_PER_MILE = 1609.344
+
+# Strava documents a running moving threshold of anything faster than a 30-minute mile pace.
+# For walks/hikes, Strava doesn't publish a specific threshold, so we use a more permissive default.
+RUN_MOVING_SPEED_THRESHOLD_M_S = M_PER_MILE / (30.0 * 60.0)  # ~0.894 m/s
+WALK_MOVING_SPEED_THRESHOLD_M_S = M_PER_MILE / (60.0 * 60.0)  # 60-min mile ~= 0.447 m/s
+
+
+def _is_walk_hike(sport_type: str | None) -> bool:
+    if not sport_type:
+        return False
+    s = sport_type.lower()
+    return s.startswith("walking") or s.startswith("hiking") or ("walk" in s) or ("hike" in s)
+
+
+def _safe_numeric(series: pd.Series) -> pd.Series:
+    # Accept real numbers, numeric strings, and None. Anything else -> NaN.
+    return pd.to_numeric(series, errors="coerce")
+
+
+def _derive_speed_from_distance(seconds: np.ndarray, distance_m: np.ndarray) -> np.ndarray:
+    """Derive speed (m/s) from distance/time when speed samples are missing/zero/unreliable."""
+    if len(seconds) < 2:
+        return np.full_like(seconds, np.nan, dtype=float)
+
+    # Ensure monotonic seconds (should be, but FITs sometimes repeat timestamps).
+    sec = seconds.astype(float)
+    dist = distance_m.astype(float)
+
+    dsec = np.diff(sec, prepend=sec[0])
+    ddist = np.diff(dist, prepend=dist[0])
+
+    # First element has 0 delta; set to NaN so it doesn't pollute.
+    dsec[0] = np.nan
+    ddist[0] = np.nan
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        speed = ddist / dsec
+
+    # Clamp insane spikes (GPS glitches or resets). Keep reasonably wide.
+    speed[(speed < 0) | (speed > 12.0)] = np.nan  # 12 m/s = 2:14/mi sprinting; fine.
+    return speed
+
+
+def _choose_speed(speed_m_s: np.ndarray, seconds: np.ndarray, distance_m: np.ndarray) -> np.ndarray:
+    """Pick the best available speed series."""
+    v = speed_m_s.astype(float)
+
+    ok = np.isfinite(v) & (v > 0)
+    # Some HealthFit exports have speed present but all zeros (still 'not null').
+    if ok.any():
+        # If the median positive speed is basically zero, treat as unusable.
+        med = np.nanmedian(v[ok])
+        if math.isfinite(med) and med > 0.1:
+            return v
+
+    derived = _derive_speed_from_distance(seconds, distance_m)
+    return derived
+
+
+def build_and_store_plot_samples(workout_id: int) -> Optional[pd.DataFrame]:
+    """Builds chart-ready samples at a uniform 2-second cadence and stores them in workout_plot_samples.
+
+    Also updates workouts.moving_time_s / stationary_time_s and avg_gap_min_per_mile where possible.
+
+    Returns the dataframe of plot samples, or None if no samples exist.
+    """
+    conn = get_connection()
+    try:
+        # Load raw samples
+        df_samples = pd.read_sql_query(
+            """
+            SELECT
+                seconds_since_start,
+                distance_m,
+                elevation_m,
+                speed_m_s,
+                heart_rate_bpm,
+                cadence_spm,
+                power_w
+            FROM workout_samples
+            WHERE workout_id = ?
+            ORDER BY seconds_since_start
+            """,
+            conn,
+            params=(workout_id,),
+        )
+        if df_samples.empty:
+            return None
+
+        # Workout metadata (sport type + duration)
+        w_meta = conn.execute(
+            "SELECT sport_type, duration_s FROM workouts WHERE id = ?",
+            (workout_id,),
+        ).fetchone()
+        sport_type = (w_meta[0] if w_meta else None) or None
+        duration_s = float(w_meta[1] or 0.0) if w_meta else 0.0
+
+        # Coerce numeric columns
+        for col in [
+            "seconds_since_start",
+            "distance_m",
+            "elevation_m",
+            "speed_m_s",
+            "heart_rate_bpm",
+            "cadence_spm",
+            "power_w",
+        ]:
+            df_samples[col] = _safe_numeric(df_samples[col])
+
+        # Drop rows without a time index
+        df_samples = df_samples.dropna(subset=["seconds_since_start"]).copy()
+        if df_samples.empty:
+            return None
+
+        # Ensure sorted and unique-ish timebase
+        df_samples = df_samples.sort_values("seconds_since_start")
+        df_samples = df_samples.drop_duplicates(subset=["seconds_since_start"], keep="last")
+
+        seconds = df_samples["seconds_since_start"].to_numpy(dtype=float)
+        distance_m = df_samples["distance_m"].to_numpy(dtype=float)
+        elevation_m = df_samples["elevation_m"].to_numpy(dtype=float)
+        speed_m_s = df_samples["speed_m_s"].to_numpy(dtype=float)
+
+        # Uniform time grid (2-second samples)
+        max_t = float(np.nanmax(seconds)) if len(seconds) else 0.0
+        if duration_s and duration_s > max_t:
+            max_t = duration_s
+        if not math.isfinite(max_t) or max_t <= 0:
+            return None
+
+        t_grid = np.arange(0.0, max_t + 1e-9, 2.0)  # seconds
+        t_min = t_grid / 60.0
+
+        def interp(series: np.ndarray) -> np.ndarray:
+            # Interpolate NaNs by ignoring them
+            ok = np.isfinite(series) & np.isfinite(seconds)
+            if ok.sum() < 2:
+                return np.full_like(t_grid, np.nan, dtype=float)
+            return np.interp(t_grid, seconds[ok], series[ok])
+
+        dist_i = interp(distance_m)
+        elev_i = interp(elevation_m)
+
+        # Choose best speed then interpolate
+        speed_best = _choose_speed(speed_m_s, seconds, distance_m)
+        speed_i = interp(speed_best)
+
+        # Pace (min/mi)
+        pace_min_per_mile = np.full_like(t_grid, np.nan, dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            pace_min_per_mile = (M_PER_MILE / speed_i) / 60.0
+        pace_min_per_mile[(~np.isfinite(pace_min_per_mile)) | (pace_min_per_mile <= 0) | (pace_min_per_mile > 60)] = np.nan
+
+        # Elevation (ft)
+        elevation_ft = elev_i * 3.28084
+
+        # Heart rate / cadence / power
+        hr_i = interp(df_samples["heart_rate_bpm"].to_numpy(dtype=float))
+        cad_i = interp(df_samples["cadence_spm"].to_numpy(dtype=float))
+        pow_i = interp(df_samples["power_w"].to_numpy(dtype=float))
+
+        hr_i[(~np.isfinite(hr_i)) | (hr_i <= 0)] = np.nan
+        cad_i[(~np.isfinite(cad_i)) | (cad_i <= 0)] = np.nan
+        pow_i[(~np.isfinite(pow_i)) | (pow_i <= 0)] = np.nan
+
+        # Grade (%): compute from distance/elevation on the interpolated arrays
+        grade_pct = np.full_like(t_grid, np.nan, dtype=float)
+        try:
+            grade_pct = compute_grade_pct(dist_i, elev_i)
+        except Exception:
+            # Fallback: derivative-based grade
+            dd = np.diff(dist_i, prepend=dist_i[0])
+            de = np.diff(elev_i, prepend=elev_i[0])
+            dd[0] = np.nan
+            de[0] = np.nan
+            with np.errstate(divide="ignore", invalid="ignore"):
+                grade_pct = (de / dd) * 100.0
+            grade_pct[(~np.isfinite(grade_pct)) | (np.abs(grade_pct) > 80)] = np.nan
+
+        # GAP pace (min/mi): derive from speed+grade
+        gap_min_per_mile = np.full_like(t_grid, np.nan, dtype=float)
+        try:
+            gap_speed = gap_from_speed(speed_i, grade_pct)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                gap_min_per_mile = (M_PER_MILE / gap_speed) / 60.0
+            gap_min_per_mile[(~np.isfinite(gap_min_per_mile)) | (gap_min_per_mile <= 0) | (gap_min_per_mile > 60)] = np.nan
+        except Exception:
+            pass
+
+        # Build output df
+        df_plot = pd.DataFrame(
+            {
+                "t_min": t_min,
+                "pace_min_per_mile": pace_min_per_mile,
+                "elevation_ft": elevation_ft,
+                "heart_rate_bpm": hr_i,
+                "cadence_spm": cad_i,
+                "power_w": pow_i,
+                "gap_min_per_mile": gap_min_per_mile,
+                "grade_pct": grade_pct,
+            }
+        )
+
+        # Store: replace existing samples for this workout
+        conn.execute("DELETE FROM workout_plot_samples WHERE workout_id = ?", (workout_id,))
+        conn.executemany(
+            """
+            INSERT INTO workout_plot_samples (
+                workout_id, t_min, pace_min_per_mile, elevation_ft, heart_rate_bpm, cadence_spm, power_w,
+                gap_min_per_mile, grade_pct
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    workout_id,
+                    float(r.t_min),
+                    None if not math.isfinite(r.pace_min_per_mile) else float(r.pace_min_per_mile),
+                    None if not math.isfinite(r.elevation_ft) else float(r.elevation_ft),
+                    None if not math.isfinite(r.heart_rate_bpm) else float(r.heart_rate_bpm),
+                    None if not math.isfinite(r.cadence_spm) else float(r.cadence_spm),
+                    None if not math.isfinite(r.power_w) else float(r.power_w),
+                    None if not math.isfinite(r.gap_min_per_mile) else float(r.gap_min_per_mile),
+                    None if not math.isfinite(r.grade_pct) else float(r.grade_pct),
+                )
+                for r in df_plot.itertuples(index=False)
+            ],
+        )
+
+        # Moving vs stationary time
+        moving_thresh = WALK_MOVING_SPEED_THRESHOLD_M_S if _is_walk_hike(sport_type) else RUN_MOVING_SPEED_THRESHOLD_M_S
+        dt = np.diff(t_grid, prepend=t_grid[0]).astype(float)
+        dt[0] = 0.0
+        moving_mask = np.isfinite(speed_i) & (speed_i >= moving_thresh)
+        moving_time_s = float(np.nansum(dt[moving_mask]))
+        stationary_time_s = float(max(0.0, max_t - moving_time_s))
+
+        conn.execute(
+            """
+            UPDATE workouts
+            SET moving_time_s = ?, stationary_time_s = ?
+            WHERE id = ?
+            """,
+            (moving_time_s, stationary_time_s, workout_id),
+        )
+
+        # Average GAP (ignore NaNs)
+        avg_gap = float(np.nanmean(gap_min_per_mile)) if np.isfinite(gap_min_per_mile).any() else None
+        if avg_gap is not None and math.isfinite(avg_gap):
+            conn.execute(
+                "UPDATE workouts SET avg_gap_min_per_mile = ? WHERE id = ?",
+                (avg_gap, workout_id),
+            )
+
+        conn.commit()
+        return df_plot
+
+    finally:
+        conn.close()

@@ -1,0 +1,158 @@
+"""
+Backfill chart-ready telemetry into workout_plot_samples.
+
+Run this after you ingest new workouts (or after upgrading the DB schema),
+so the Training Dashboard can use fast interactive Plotly charts without
+recomputing/downsampling on every click.
+
+Usage (PowerShell):
+  cd C:\trail_ops
+  .\venv\Scripts\Activate.ps1
+  python app\tools\backfill_plot_samples.py
+
+You can safely re-run it; it replaces plot samples per workout.
+"""
+
+from __future__ import annotations
+
+import datetime
+from datetime import timezone, timedelta
+
+import numpy as np
+import pandas as pd
+
+from db.database import get_connection, init_db
+
+
+def build_and_store_plot_samples(workout_id: int, max_points: int = 900) -> None:
+    conn = get_connection()
+    try:
+        df = pd.read_sql_query(
+            """
+            SELECT
+                seconds_since_start,
+                timestamp_utc,
+                elevation_m,
+                speed_m_s,
+                heart_rate_bpm,
+                cadence_spm,
+                power_w
+            FROM workout_samples
+            WHERE workout_id = ?
+            ORDER BY
+                CASE
+                    WHEN seconds_since_start IS NOT NULL THEN seconds_since_start
+                    ELSE timestamp_utc
+                END;
+            """,
+            conn,
+            params=(workout_id,),
+        )
+
+        if df.empty:
+            return
+
+        # time axis
+        if df["seconds_since_start"].notna().any():
+            t_sec = df["seconds_since_start"].ffill().to_numpy(dtype=float)
+        else:
+            t = pd.to_datetime(df["timestamp_utc"], utc=True, errors="coerce")
+            t_sec = (t - t.iloc[0]).dt.total_seconds().to_numpy(dtype=float)
+
+        t_min = t_sec / 60.0
+
+        # pace in min/mi from speed
+        speed = pd.to_numeric(df["speed_m_s"], errors="coerce").to_numpy(dtype=float)
+        pace_min_mi = np.full_like(speed, np.nan, dtype=float)
+        ok = np.isfinite(speed) & (speed > 0.1)
+        pace_min_mi[ok] = (1609.344 / speed[ok]) / 60.0
+
+        # smooth pace (moving average)
+        pace_series = pd.Series(pace_min_mi)
+        pace_smooth = pace_series.rolling(window=30, min_periods=1).mean().to_numpy(dtype=float)
+
+        elev_ft = pd.to_numeric(df["elevation_m"], errors="coerce").to_numpy(dtype=float) * 3.28084
+        hr = pd.to_numeric(df["heart_rate_bpm"], errors="coerce").to_numpy(dtype=float)
+        cad = pd.to_numeric(df["cadence_spm"], errors="coerce").to_numpy(dtype=float)
+        pwr = pd.to_numeric(df["power_w"], errors="coerce").to_numpy(dtype=float)
+
+        # downsample evenly
+        n = len(t_min)
+        if n > max_points:
+            idx = np.linspace(0, n - 1, max_points, dtype=int)
+        else:
+            idx = np.arange(n)
+
+        out = pd.DataFrame(
+            {
+                "workout_id": workout_id,
+                "t_min": t_min[idx],
+                "pace_min_per_mile": pace_smooth[idx],
+                "elevation_ft": elev_ft[idx],
+                "heart_rate_bpm": hr[idx],
+                "cadence_spm": cad[idx],
+                "power_w": pwr[idx],
+            }
+        )
+
+        with conn:
+            conn.execute("DELETE FROM workout_plot_samples WHERE workout_id = ?;", (workout_id,))
+            out.to_sql("workout_plot_samples", conn, if_exists="append", index=False)
+
+    finally:
+        conn.close()
+
+
+def main() -> None:
+    init_db()
+
+    now = datetime.datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=30)
+
+    conn = get_connection()
+    try:
+        workouts = pd.read_sql_query(
+            """
+            SELECT id, start_time, sport_type
+            FROM workouts
+            ORDER BY start_time DESC;
+            """,
+            conn,
+        )
+    finally:
+        conn.close()
+
+    if workouts.empty:
+        print("No workouts found.")
+        return
+
+    # Only backfill recent detailed sports (running/walking/hiking) to keep it quick
+    def allowed(s: str) -> bool:
+        if not s:
+            return False
+        sl = s.lower()
+        if sl.startswith("running") or sl.startswith("walking") or sl.startswith("hiking"):
+            return True
+        if "trail" in sl and ("run" in sl or "walk" in sl or "hike" in sl):
+            return True
+        return False
+
+    workouts["start_time_dt"] = pd.to_datetime(workouts["start_time"], errors="coerce", utc=True)
+    recent = workouts[workouts["start_time_dt"] >= cutoff].copy()
+    recent = recent[recent["sport_type"].apply(lambda x: allowed(x or ""))]
+
+    print(f"Found {len(recent)} recent running/walking/hiking workouts to backfill.")
+
+    done = 0
+    for _, row in recent.iterrows():
+        wid = int(row["id"])
+        build_and_store_plot_samples(wid)
+        done += 1
+        if done % 10 == 0:
+            print(f"  processed {done}/{len(recent)}")
+
+    print(f"Backfill complete: {done} workouts processed.")
+
+
+if __name__ == "__main__":
+    main()

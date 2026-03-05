@@ -8,7 +8,8 @@ from typing import Optional, Dict, Any, List, Tuple
 import sqlite3
 from fitparse import FitFile
 
-from db.database import get_connection
+from app.db.database import get_connection
+from app.analysis.enrichment_pipeline import enrich_workout
 
 
 @dataclass
@@ -83,6 +84,20 @@ def _safe_float(value: Any) -> Optional[float]:
         return float(value)
     except Exception:
         return None
+
+
+def _semicircles_to_degrees(value: Optional[float]) -> Optional[float]:
+    """Convert FIT semicircles to degrees.
+
+    FIT position_lat/position_long are typically stored as signed 32-bit 'semicircles'.
+    Some exporters may already provide degrees. We detect semicircles by magnitude.
+    """
+    if value is None:
+        return None
+    # If it's already in degrees, it should be within [-180, 180]
+    if abs(value) <= 180.0:
+        return value
+    return value * (180.0 / 2147483648.0)
 
 
 def _parse_session_message(session) -> Dict[str, Any]:
@@ -255,8 +270,8 @@ def _extract_samples_from_fit(fit: FitFile, session_start: Optional[datetime]) -
         ground_contact_balance_pct = _safe_float(gcb_raw)
 
         # GPS position
-        lat = _safe_float(rec_fields.get("position_lat"))
-        lon = _safe_float(rec_fields.get("position_long"))
+        lat = _semicircles_to_degrees(_safe_float(rec_fields.get("position_lat")))
+        lon = _semicircles_to_degrees(_safe_float(rec_fields.get("position_long")))
 
         # Lap index if provided
         lap_index_val = rec_fields.get("lap_index") or rec_fields.get("lap")
@@ -408,20 +423,20 @@ def ingest_new_fit_workouts(max_files: int = 200) -> dict[str, int]:
         if not candidates:
             return summary
 
-        with conn:
-            for source_id, path_str, existing_workout_id in candidates:
-                path = Path(path_str)
-                if not path.exists():
-                    summary["skipped_missing"] += 1
-                    continue
+        for source_id, path_str, existing_workout_id in candidates:
+            path = Path(path_str)
+            if not path.exists():
+                summary["skipped_missing"] += 1
+                continue
 
-                result = extract_workout_from_fit(path)
-                if result is None:
-                    summary["skipped_parse_error"] += 1
-                    continue
+            result = extract_workout_from_fit(path)
+            if result is None:
+                summary["skipped_parse_error"] += 1
+                continue
 
-                ws, samples = result
+            ws, samples = result
 
+            with conn:
                 # Insert or update the workouts row
                 if existing_workout_id is None:
                     # New workout
@@ -568,6 +583,26 @@ def ingest_new_fit_workouts(max_files: int = 200) -> dict[str, int]:
                     )
                     summary["samples_written"] += len(sample_rows)
 
+
+                # Enrich newly ingested GPS workouts with:
+                # - simplified map points + route hash
+                # - downsampled plot samples
+                # - hierarchical route context (location)
+                # - surface stats (v2)
+                # - weather (start + high point)
+                # - peak hits
+                #
+                # NOTE: The enrichment helpers open their own SQLite connections.
+                # We therefore run them *after* the ingestion transaction has committed.
+            # end with conn
+
+            # Run enrichments (best-effort per workout; failures should not kill ingestion).
+            # This is intentionally idempotent and safe to re-run.
+            try:
+                enrich_workout(int(workout_id))
+            except Exception:
+                # Defensive: pipeline is already best-effort, but ingestion must never die here.
+                pass
     finally:
         conn.close()
 

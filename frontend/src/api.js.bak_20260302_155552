@@ -1,0 +1,98 @@
+const DEFAULT_BASE = "http://127.0.0.1:8000";
+
+/**
+ * Base URL for TrailOps FastAPI.
+ * Override via Vite env:
+ *   VITE_API_BASE=http://127.0.0.1:8000
+ */
+export function apiBase() {
+  return (import.meta.env && import.meta.env.VITE_API_BASE) ? import.meta.env.VITE_API_BASE : DEFAULT_BASE;
+}
+
+/** Join base + path safely (handles missing/extra slash). */
+export function apiUrl(path = "") {
+  const base = apiBase().replace(/\/+$/, "");
+  const p = String(path || "");
+  if (!p) return base;
+  return base + (p.startsWith("/") ? p : `/${p}`);
+}
+
+function apiHeaders(extra = {}) {
+  // Optional API key support.
+  // Backend: set TRAILOPS_API_KEY
+  // Frontend: set VITE_API_KEY or VITE_TRAILOPS_API_KEY (in frontend/.env.local)
+  const key = (import.meta.env && (import.meta.env.VITE_API_KEY || import.meta.env.VITE_TRAILOPS_API_KEY)) || null;
+  return {
+    ...(key ? { "X-API-Key": key } : {}),
+    ...extra,
+  };
+}
+
+export async function fetchHealth() {
+  const r = await fetch(apiUrl("/health"), { method: "GET" });
+  if (!r.ok) throw new Error(`health ${r.status}`);
+  return await r.json();
+}
+
+export async function fetchWorkouts({ start, end, sport = "all", limit = 300 } = {}) {
+  const params = new URLSearchParams();
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  if (sport && sport !== "all") params.set("sport", sport);
+  if (limit) params.set("limit", String(limit));
+
+  const url = `${apiUrl("/workouts")}?${params.toString()}`;
+  const r = await fetch(url, { method: "GET", headers: apiHeaders() });
+  if (!r.ok) throw new Error(`workouts ${r.status}`);
+  return await r.json();
+}
+
+export async function fetchSparklines({ workoutIds = [], maxPoints = 60, metricMode = "auto" } = {}) {
+  const r = await fetch(apiUrl("/workouts/sparklines"), {
+    method: "POST",
+    headers: apiHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({
+      workout_ids: workoutIds,
+      max_points: maxPoints,
+      metric_mode: metricMode,
+    }),
+  });
+  if (!r.ok) throw new Error(`sparklines ${r.status}`);
+  return await r.json();
+}
+
+export async function fetchWorkoutContext(workoutId) {
+  const wid = String(workoutId);
+  const r = await fetch(apiUrl(`/workouts/${encodeURIComponent(wid)}/context`), {
+    method: "GET",
+    headers: apiHeaders(),
+  });
+  if (!r.ok) throw new Error(`workout context ${r.status}`);
+  return await r.json();
+}
+
+export async function fetchWorkoutMapPoints(
+  workoutId,
+  { level = 0, max_points = 12000, include_markers = true } = {}
+) {
+  const params = new URLSearchParams();
+  params.set("level", String(level));
+  params.set("max_points", String(max_points));
+  params.set("include_markers", include_markers ? "true" : "false");
+
+  const url = `${apiUrl(`/workouts/${encodeURIComponent(String(workoutId))}/map-points`)}?${params.toString()}`;
+  const r = await fetch(url, { method: "GET", headers: apiHeaders() });
+  if (!r.ok) throw new Error(`map_points ${r.status}`);
+  return await r.json();
+}
+
+export async function fetchPeaksDashboard({ range = "30d", cls = "wainwrights" } = {}) {
+  const params = new URLSearchParams();
+  if (range) params.set("range", String(range));
+  if (cls) params.set("cls", String(cls));
+
+  const url = `${apiUrl("/peaks/dashboard")}?${params.toString()}`;
+  const r = await fetch(url, { method: "GET", headers: apiHeaders() });
+  if (!r.ok) throw new Error(`peaks dashboard ${r.status}`);
+  return await r.json();
+}

@@ -1,0 +1,1534 @@
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import {
+  ResponsiveContainer,
+  ComposedChart,
+  Bar,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  CartesianGrid,
+} from "recharts";
+import "react-day-picker/style.css";
+import "./styles.css";
+import { DayPicker } from "react-day-picker";
+
+import { fetchHealth, fetchWorkouts, fetchSparklines, fetchWorkoutContext } from "./api";
+
+// --- Units / formatting ------------------------------------------------------
+
+const M_TO_MI = 0.000621371;
+const M_TO_FT = 3.28084;
+
+const nf0 = new Intl.NumberFormat("en-GB", { maximumFractionDigits: 0 });
+const nf1 = new Intl.NumberFormat("en-GB", {
+  maximumFractionDigits: 1,
+  minimumFractionDigits: 1,
+});
+
+
+function formatPace(minPerMile) {
+  const m = Number(minPerMile);
+  if (!Number.isFinite(m) || m <= 0) return "—";
+  const totalSec = Math.round(m * 60);
+  const mm = Math.floor(totalSec / 60);
+  const ss = totalSec % 60;
+  return `${mm}:${String(ss).padStart(2, "0")}`;
+}
+
+
+function clampNum(x) {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function isoDate(d) {
+  return d.toISOString().slice(0, 10);
+}
+
+function fmtMonospace(ts) {
+  if (!ts) return "";
+  return String(ts).slice(0, 16).replace("T", " ");
+}
+
+function fmtRecentDateTime(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return fmtMonospace(ts);
+  const time = d.toLocaleTimeString("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const date = d.toLocaleDateString("en-GB", {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+  });
+  return `${time}, ${date}`;
+}
+
+function surfaceLabel(key) {
+  if (!key) return null;
+  const map = {
+    road: "Road",
+    paved_path: "Paved path",
+    trail: "Trail",
+    track: "Track",
+    grass: "Grass",
+    rock: "Rock",
+    forest: "Forest",
+    unknown: "Unknown",
+  };
+  return map[key] || key;
+}
+
+function formatLocationShort(label) {
+  const s = String(label || "").trim();
+  if (!s) return null;
+
+  let parts = s.split(",").map((p) => p.trim()).filter(Boolean);
+
+  const drop = new Set(["united kingdom", "uk", "england", "scotland", "wales"]);
+  parts = parts.filter((p) => !drop.has(p.toLowerCase()));
+
+  const isPostcode = (p) =>
+    /^[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}$/i.test(p) || /\b[A-Z]{1,2}\d\d?\b/i.test(p);
+  parts = parts.filter((p) => !isPostcode(p));
+
+  if (parts.length && /^[A-Z]\d{2,4}$/i.test(parts[0].replace(/\s+/g, ""))) {
+    parts.shift();
+  }
+
+  if (!parts.length) return s;
+
+  const place = parts[0];
+  const region = parts.length >= 2 ? parts[parts.length - 1] : null;
+
+  return region ? `${place}, ${region}` : place;
+}
+
+
+function weatherKind(w) {
+  if (!w) return "unknown";
+  const wind = Number(w.wind_kph || 0);
+  const rain = Number(w.precip_sum_mm ?? w.precip_mm ?? 0);
+  const cloud = Number(w.cloudcover_pct || 0);
+  if (wind >= 28) return "wind";
+  if (rain >= 5) return "rain_heavy";
+  if (rain >= 0.2) return "rain";
+  if (cloud >= 70) return "cloud";
+  return "sun";
+}
+function hasMoon(w) {
+  if (!w) return false;
+  return w.moon_phase_name || w.moon_phase || w.moon_illumination != null;
+}
+
+function moonIllumPct(x) {
+  if (x == null || Number.isNaN(Number(x))) return null;
+  const v = Number(x);
+  // Accept either 0..1 or 0..100
+  const pct = v <= 1.5 ? v * 100 : v;
+  return Math.max(0, Math.min(100, Math.round(pct)));
+}
+
+function moonPhaseKind(name) {
+  const s = String(name || "").toLowerCase().trim();
+  if (!s) return "unknown";
+  if (s.includes("new")) return "new";
+  if (s.includes("full")) return "full";
+  if (s.includes("first") && s.includes("quarter")) return "first_quarter";
+  if ((s.includes("last") || s.includes("third")) && s.includes("quarter")) return "last_quarter";
+  if (s.includes("waxing") && s.includes("crescent")) return "waxing_crescent";
+  if (s.includes("waning") && s.includes("crescent")) return "waning_crescent";
+  if (s.includes("waxing") && s.includes("gibbous")) return "waxing_gibbous";
+  if (s.includes("waning") && s.includes("gibbous")) return "waning_gibbous";
+  return "unknown";
+}
+
+function formatMoon(w) {
+  if (!w) return "–";
+  const name = w.moon_phase_name || w.moon_phase || "";
+  const pct = moonIllumPct(w.moon_illumination);
+  const parts = [];
+  if (name) parts.push(String(name));
+  if (pct != null) parts.push(`${pct}%`);
+  return parts.length ? parts.join(" • ") : "–";
+}
+
+
+function formatWeather(w) {
+  if (!w) return "–";
+  const t = (w.temp_c ?? w.temperature_c ?? w.air_temp_c);
+  const wind = (w.wind_kph ?? w.wind_speed_kph ?? w.wind_speed);
+  const rain = (w.precip_mm ?? w.precip_sum_mm ?? w.rain_mm ?? w.precipitation_mm);
+  const parts = [];
+  if (t != null && Number.isFinite(Number(t))) parts.push(`${Math.round(Number(t))}°C`);
+  if (wind != null && Number.isFinite(Number(wind))) parts.push(`${Math.round(Number(wind))}kph`);
+  if (rain != null && Number.isFinite(Number(rain))) parts.push(Numbe
+
+
+function MoonPhaseIcon({ phase }) {
+  const p = phase || "unknown";
+  const common = { width: 14, height: 14, viewBox: "0 0 24 24", fill: "none" };
+
+  // Simple phase rendering using masks.
+  // We render a circle (the moon) and mask a shadow circle with different offsets.
+  const baseCircle = <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="2" fill="none" />;
+
+  // Offsets: negative = shadow on left (waxing), positive = shadow on right (waning)
+  let offset = 0;
+  let fillFull = false;
+  let fillNew = false;
+
+  if (p === "full") fillFull = true;
+  else if (p === "new") fillNew = true;
+  else if (p === "first_quarter") offset = -8;
+  else if (p === "last_quarter") offset = 8;
+  else if (p === "waxing_crescent") offset = -4;
+  else if (p === "waning_crescent") offset = 4;
+  else if (p === "waxing_gibbous") offset = -12;
+  else if (p === "waning_gibbous") offset = 12;
+
+  const maskId = `moonMask_${p}_${Math.abs(offset)}`;
+
+  return (
+    <svg {...common}>
+      {baseCircle}
+
+      {/* fill */}
+      {fillFull ? <circle cx="12" cy="12" r="7" fill="currentColor" opacity="0.85" /> : null}
+      {fillNew ? null : (
+        <mask id={maskId}>
+          <rect x="0" y="0" width="24" height="24" fill="white" />
+          {/* shadow cutout */}
+          <circle cx={12 + offset} cy="12" r="7" fill="black" />
+        </mask>
+      )}
+
+      {/* illuminated portion */}
+      {!fillFull && !fillNew ? (
+        <circle cx="12" cy="12" r="7" fill="currentColor" opacity="0.75" mask={`url(#${maskId})`} />
+      ) : null}
+    </svg>
+  );
+}
+
+r(rain) >= 2 ? "heavy rain" : Number(rain) > 0.2 ? "rain" : "dry");
+  return parts.length ? parts.join(" • ") : "–";
+}
+
+
+function WeatherIcon({ kind }) {
+  const k = kind || "unknown";
+  const common = { width: 14, height: 14, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" };
+  if (k === "sun") {
+    return (
+      <svg {...common}>
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+      </svg>
+    );
+  }
+  if (k === "cloud") {
+    return (
+      <svg {...common}>
+        <path d="M20 17.5a4.5 4.5 0 0 0-1.2-8.9A6 6 0 0 0 7 9.2 4 4 0 0 0 7.5 17.5H20z" />
+      </svg>
+    );
+  }
+  if (k === "rain" || k === "rain_heavy") {
+    return (
+      <svg {...common}>
+        <path d="M20 17.5a4.5 4.5 0 0 0-1.2-8.9A6 6 0 0 0 7 9.2 4 4 0 0 0 7.5 17.5H20z" />
+        <path d="M8 20l1-2M12 20l1-2M16 20l1-2" />
+        {k === "rain_heavy" ? <path d="M10 22l1-2M14 22l1-2" /> : null}
+      </svg>
+    );
+  }
+  if (k === "wind") {
+    return (
+      <svg {...common}>
+        <path d="M3 8h10a3 3 0 1 0-3-3" />
+        <path d="M4 12h13a3 3 0 1 1-3 3" />
+        <path d="M2 16h8" />
+      </svg>
+    );
+  }
+  return (
+    <svg {...common}>
+      <path d="M3 12h18" />
+    </svg>
+  );
+}
+
+function CtxPill({ kind, icon, label, value }) {
+  return (
+    <div className={`ctxPill ctxPill--${kind}`}>
+      <span className="ctxI">{icon}</span>
+      <span className="ctxL">{label}</span>
+      <span className="ctxV">{value || "–"}</span>
+    </div>
+  );
+}
+
+function PinIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 21s7-4.4 7-11a7 7 0 0 0-14 0c0 6.6 7 11 7 11z" />
+      <circle cx="12" cy="10" r="2" />
+    </svg>
+  );
+}
+
+function MountainIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 20l7-12 4 7 2-3 5 8H3z" />
+    </svg>
+  );
+}
+
+function RoadIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M19 20L14 4H10L5 20" />
+      <path d="M12 9v3" />
+      <path d="M12 15v3" />
+    </svg>
+  );
+}
+
+
+function firstNumber(obj, keys) {
+  for (const k of keys) {
+    const v = obj?.[k];
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return NaN;
+}
+
+// --- Sparklines (placeholders for per-workout quick glance) ----------------
+
+function statForWorkout(w) {
+  const st = String(w?.sport_type || "").toLowerCase();
+  const elevFt = clampNum(w?.elevation_gain_m) * M_TO_FT;
+
+  // Running (outdoor): elevation if big vert, otherwise pace.
+  if (st === "running:generic") return elevFt > 800 ? "elevation" : "pace";
+  if (st === "running:indoor_running") return "heart";
+
+  // Walking / hiking.
+  if (st === "walking:generic") return "elevation";
+  if (st === "walking:indoor_walking") return "heart";
+  if (st.includes("hiking")) return "elevation";
+
+  // Cycling.
+  if (st.startsWith("cycling:")) return "power";
+
+  // Strength / HIIT / Stair climber.
+  if (st === "training:strength_training") return "heart";
+  if (st === "fitness_equipment:stair_climbing") return "heart";
+  if (st === "62:70") return "heart";
+
+  // Cooldown / generic etc.
+  return "heart";
+}
+
+function sparkColor(stat) {
+  // Match the requested palette (retro-futuristic but readable).
+  const s = String(stat || "").toLowerCase();
+  if (s === "heart" || s === "hr") return "var(--spark-hr)";
+  if (s === "pace") return "var(--spark-pace)";
+  if (s === "elevation" || s === "elev") return "var(--spark-elev)";
+  if (s === "power" || s === "pwr") return "var(--spark-power)";
+  // GAP/Grade are not currently used for sparks; fall back to pace/elevation.
+  if (s === "gap") return "var(--spark-pace)";
+  if (s === "grade") return "var(--spark-elev)";
+  return "var(--spark-pace)";
+}
+
+
+function sparkPoints(seed, n = 18) {
+  // Deterministic fake signal based on workout_id.
+  const s = clampNum(seed) || 0;
+  const pts = [];
+  const a = 0.35 + ((s % 13) / 13) * 0.35;
+  const f = 0.6 + ((s % 7) / 7) * 1.1;
+  const p = (s % 17) * 0.12;
+  for (let i = 0; i < n; i++) {
+    const t = i / (n - 1);
+    const y = 0.55 + a * Math.sin((t * Math.PI * 2) * f + p) + 0.08 * Math.sin(t * 9 + p);
+    pts.push(Math.max(0.05, Math.min(0.95, y)));
+  }
+  return pts;
+}
+
+function Sparkline({ data, fallbackStat, seed }) {
+  // Render as responsive SVG (width controlled by CSS); viewBox stays constant.
+  const W = 260;
+  const H = 34;
+  const P = 3;
+
+  const metric = useMemo(() => {
+    const m = data?.metric;
+    if (m) return String(m).toLowerCase();
+    const fb = String(fallbackStat || "").toLowerCase();
+    if (fb === "heart") return "hr";
+    if (fb === "pace") return "pace";
+    if (fb === "elevation") return "elevation";
+    if (fb === "power") return "power";
+    return "hr";
+  }, [data, fallbackStat]);
+
+  const pointsNorm = useMemo(() => {
+    const raw = Array.isArray(data?.points) ? data.points : null;
+
+    // If API data exists, normalise raw values to 0..1 for spark rendering.
+    if (raw && raw.length >= 2) {
+      const vals = raw
+        .map((p) => (Array.isArray(p) ? p[1] : null))
+        .map((v) => (v == null ? null : Number(v)))
+        .filter((v) => Number.isFinite(v));
+
+      if (vals.length < 2) return sparkPoints(seed, 18);
+
+      const vmin = Math.min(...vals);
+      const vmax = Math.max(...vals);
+
+      if (!Number.isFinite(vmin) || !Number.isFinite(vmax) || vmax === vmin) {
+        return new Array(Math.max(2, Math.min(60, raw.length))).fill(0.5);
+      }
+
+      const invert = metric === "pace" || metric === "gap";
+      return raw
+        .map((p) => {
+          const v = Array.isArray(p) ? Number(p[1]) : NaN;
+          if (!Number.isFinite(v)) return null;
+          let n = (v - vmin) / (vmax - vmin);
+          if (invert) n = 1 - n;
+          n = Math.max(0, Math.min(1, n));
+          return n;
+        })
+        .filter((x) => x != null);
+    }
+
+    // Fallback to deterministic placeholder signal (still useful if API missing).
+    return sparkPoints(seed, 18);
+  }, [data, metric, seed]);
+
+  const d = useMemo(() => {
+    const pts = pointsNorm;
+    if (!pts || pts.length < 2) return "";
+    const xStep = (W - P * 2) / (pts.length - 1);
+    return pts
+      .map((v, i) => {
+        const x = P + i * xStep;
+        const y = P + (1 - v) * (H - P * 2);
+        return `${i === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+      })
+      .join(" ");
+  }, [pointsNorm]);
+
+  const stroke = sparkColor(metric);
+
+  return (
+    <div className="rowSpark" title={`${metric.toUpperCase()} preview`}>
+      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="sparkline" preserveAspectRatio="none">
+        <path className="sparkBg" d={`M ${P} ${H - P} L ${W - P} ${H - P}`} />
+        <path className="sparkLine" d={d} style={{ stroke, color: stroke }} />
+      </svg>
+      <div className="rowSparkLabel">
+        {metric === "hr"
+          ? "HR"
+          : metric === "pace"
+          ? "PACE"
+          : metric === "power"
+          ? "PWR"
+          : "ELEVATION"}
+      </div>
+    </div>
+  );
+}
+
+// --- Presets -----------------------------------------------------------------
+
+const RANGE_PRESETS = [
+  { key: "last7", label: "Last 7 days", kind: "days", days: 7 },
+  { key: "last14", label: "Last 14 days", kind: "days", days: 14 },
+  { key: "wtd", label: "Week to date", kind: "wtd" },
+  { key: "lastweek", label: "Last week", kind: "lastWeek" },
+  { key: "mtd", label: "Month to date", kind: "mtd" },
+  { key: "lastmonth", label: "Last month", kind: "lastMonth" },
+];
+
+const SPORT_CHIP_OPTIONS = [
+  { key: "all", label: "All" },
+  { key: "run", label: "Run" },
+  { key: "walk", label: "Walk" },
+  { key: "hike", label: "Hike" },
+  { key: "cycle", label: "Cycle" },
+  { key: "strength", label: "Strength" },
+  { key: "hiit", label: "HIIT" },
+  { key: "stair", label: "Stair climber" },
+];
+
+
+// Peak classification UI stubs (we’ll wire to API later).
+const PEAK_CLASSES = [
+  { value: "wainwrights", label: "Wainwrights" },
+  { value: "dodds", label: "Dodds" },
+  { value: "birkett", label: "Birketts" },
+  { value: "hewitts", label: "Hewitts" },
+  { value: "nuttalls", label: "Nuttalls" },
+  { value: "munros", label: "Munros" },
+  { value: "corbetts", label: "Corbetts" },
+  { value: "grahams", label: "Grahams" },
+  { value: "marilyns", label: "Marilyns" },
+];
+
+// Placeholder heatmap: 4 weeks × 7 days (0..3 intensity).
+const PEAK_HIT_WEEKS = [
+  [0, 0, 1, 0, 2, 0, 0],
+  [0, 2, 0, 1, 0, 2, 0],
+  [0, 0, 0, 2, 0, 0, 1],
+  [1, 0, 2, 0, 0, 1, 0],
+];
+
+const CLASS_TRACKERS = [
+  { key: "main", label: "Wainwrights", done: 42, total: 214, note: "+6 per quarter at current rate" },
+  { key: "alt", label: "Dodds", done: 17, total: 89, note: "Strong momentum" },
+];
+
+const TOP_VISITED = [
+  { name: "Scafell Pike", last: "2025-09-14", count: 6 },
+  { name: "Helvellyn", last: "2025-08-02", count: 5 },
+  { name: "Blencathra", last: "2025-10-21", count: 4 },
+  { name: "Skiddaw", last: "2026-01-06", count: 4 },
+  { name: "Catbells", last: "2025-07-11", count: 3 },
+];
+
+
+// Your exact naming map (client-side for now)
+function displaySportType(raw) {
+  const s = String(raw || "").toLowerCase();
+  const map = {
+    "running:generic": "Running (outdoor)",
+    "walking:generic": "Walking (outdoor)",
+    "hiking:generic": "Hiking",
+    "62:70": "HIIT",
+    "cycling:indoor_cycling": "Cycling (indoor)",
+    "fitness_equipment:stair_climbing": "Stair Climber",
+    "generic:generic": "Cooldown",
+    "running:indoor_running": "Running (indoor)",
+    "training:strength_training": "Strength Training",
+    "walking:indoor_walking": "Walking (indoor)",
+  };
+  if (map[s]) return map[s];
+
+  if (s.includes(":")) {
+    const head = s.split(":")[0];
+    if (head) return head.charAt(0).toUpperCase() + head.slice(1);
+  }
+  return raw || "Unknown";
+}
+
+// NOTE: API currently supports a single sport string or "all".
+// For the UX you want (All/Run/Walk/etc), we keep the API call broad
+// and filter client-side until we add category support server-side.
+function sportMatchesChip(chipKey, rawSportType) {
+  if (!chipKey || chipKey === "all") return true;
+  const t = String(rawSportType || "").toLowerCase();
+  if (chipKey === "run") return t.startsWith("running:");
+  if (chipKey === "walk") return t.startsWith("walking:");
+  if (chipKey === "hike") return t.startsWith("hiking:");
+  if (chipKey === "cycle") return t.startsWith("cycling:");
+  if (chipKey === "strength") return t === "training:strength_training";
+  if (chipKey === "hiit") return t === "62:70";
+  if (chipKey === "stair") return t === "fitness_equipment:stair_climbing";
+  return true;
+}
+
+function startOfWeek(d) {
+  const x = new Date(d);
+  const day = (x.getDay() + 6) % 7; // Monday=0
+  x.setDate(x.getDate() - day);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+function startOfMonth(d) {
+  const x = new Date(d);
+  x.setDate(1);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+function endOfLastWeek(today) {
+  const sow = startOfWeek(today);
+  const end = new Date(sow);
+  end.setDate(end.getDate() - 1);
+  end.setHours(23, 59, 59, 999);
+  return end;
+}
+function startOfLastWeek(today) {
+  const e = endOfLastWeek(today);
+  return startOfWeek(e);
+}
+function endOfLastMonth(today) {
+  const som = startOfMonth(today);
+  const end = new Date(som);
+  end.setDate(0);
+  end.setHours(23, 59, 59, 999);
+  return end;
+}
+function startOfLastMonth(today) {
+  const e = endOfLastMonth(today);
+  return startOfMonth(e);
+}
+
+// --- Helpers -----------------------------------------------------------------
+
+function groupDaily(items) {
+  const map = new Map();
+  for (const w of items) {
+    const ts = String(w.start_time || "");
+    const day = ts.slice(0, 10) || "unknown";
+    const cur = map.get(day) || { day, distMi: 0, elevFt: 0, workouts: 0 };
+    cur.distMi += clampNum(w.distance_m) * M_TO_MI;
+    cur.elevFt += clampNum(w.elevation_gain_m) * M_TO_FT;
+    cur.workouts += 1;
+    map.set(day, cur);
+  }
+  return Array.from(map.values()).sort((a, b) => (a.day < b.day ? -1 : 1));
+}
+
+function SparkTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null;
+  const d = payload[0]?.payload || {};
+  return (
+    <div className="tip">
+      <div className="tipTitle">{label}</div>
+      <div className="tipRow">
+        <span className="k">Distance</span>
+        <span className="v">{nf1.format(d.distMi || 0)} mi</span>
+      </div>
+      <div className="tipRow">
+        <span className="k">Elevation</span>
+        <span className="v">{nf0.format(d.elevFt || 0)} ft</span>
+      </div>
+      <div className="tipRow">
+        <span className="k">Workouts</span>
+        <span className="v">{nf0.format(d.workouts || 0)}</span>
+      </div>
+    </div>
+  );
+}
+
+function useOnClickOutside(ref, handler) {
+  useEffect(() => {
+    function listener(e) {
+      if (!ref.current || ref.current.contains(e.target)) return;
+      handler(e);
+    }
+    document.addEventListener("mousedown", listener);
+    document.addEventListener("touchstart", listener);
+    return () => {
+      document.removeEventListener("mousedown", listener);
+      document.removeEventListener("touchstart", listener);
+    };
+  }, [ref, handler]);
+}
+
+// --- App ---------------------------------------------------------------------
+
+export default function App() {
+  const today = useMemo(() => new Date(), []);
+
+  // Defaults
+  const [preset, setPreset] = useState("last7");
+  const [sportChip, setSportChip] = useState("all");
+  const [peaksSummaryMode, setPeaksSummaryMode] = useState("ai");
+  const [peaksRange, setPeaksRange] = useState("30d");
+  const [peaksClass, setPeaksClass] = useState("wainwrights");
+
+  const [start, setStart] = useState(() => {
+    const d = new Date(today);
+    d.setDate(d.getDate() - 6);
+    return isoDate(d);
+  });
+  const [end, setEnd] = useState(() => isoDate(today));
+
+  // API state
+  const [health, setHealth] = useState(null);
+  const [healthErr, setHealthErr] = useState(null);
+  const [data, setData] = useState(null);
+  const [dataErr, setDataErr] = useState(null);
+  const [sparklinesById, setSparklinesById] = useState({});
+
+  // Recent Activity selector
+  const [recentActivityId, setRecentActivityId] = useState(null);
+  const [recentList, setRecentList] = useState([]);
+  const [recentListErr, setRecentListErr] = useState(null);
+  const [recentCtx, setRecentCtx] = useState(null);
+  const [recentCtxErr, setRecentCtxErr] = useState(null);
+
+  // Popovers
+  const [rangeOpen, setRangeOpen] = useState(false);
+  const [sportOpen, setSportOpen] = useState(false);
+  const rangeRef = useRef(null);
+  const sportRef = useRef(null);
+  useOnClickOutside(rangeRef, () => setRangeOpen(false));
+  useOnClickOutside(sportRef, () => setSportOpen(false));
+
+  // Custom range picker state
+  const [customRange, setCustomRange] = useState(() => ({
+    from: new Date(start),
+    to: new Date(end),
+  }));
+
+  // Apply presets to (start,end)
+  useEffect(() => {
+    const p = RANGE_PRESETS.find((x) => x.key === preset);
+    if (!p) return;
+
+    const t = new Date(today);
+    let s;
+    let e = new Date(t);
+
+    if (p.kind === "days") {
+      s = new Date(t);
+      s.setDate(s.getDate() - (p.days - 1));
+    } else if (p.kind === "wtd") {
+      s = startOfWeek(t);
+    } else if (p.kind === "lastWeek") {
+      s = startOfLastWeek(t);
+      e = endOfLastWeek(t);
+    } else if (p.kind === "mtd") {
+      s = startOfMonth(t);
+    } else if (p.kind === "lastMonth") {
+      s = startOfLastMonth(t);
+      e = endOfLastMonth(t);
+    } else {
+      return;
+    }
+
+    setStart(isoDate(s));
+    setEnd(isoDate(e));
+    setCustomRange({ from: s, to: e });
+  }, [preset, today]);
+
+  useEffect(() => {
+    fetchHealth().then(setHealth).catch(setHealthErr);
+  }, []);
+
+  useEffect(() => {
+    setDataErr(null);
+    // We fetch "all" then filter client-side for now.
+    fetchWorkouts({ start, end, sport: "all", limit: 300 })
+      .then(setData)
+      .catch(setDataErr);
+  }, [start, end]);
+
+  // Recent Activity selector list:
+  // pull a bigger list than the current dashboard range so you can pick an older workout (e.g. 2–3 weeks ago)
+  useEffect(() => {
+    const lookbackDays = 30;
+    const now = new Date();
+    const start30 = new Date(now.getTime() - lookbackDays * 24 * 60 * 60 * 1000);
+    const isoStart = start30.toISOString().slice(0, 19) + "Z";
+    const isoEnd = now.toISOString().slice(0, 19) + "Z";
+
+    setRecentListErr(null);
+    fetchWorkouts({ start: isoStart, end: isoEnd, sport: "all", limit: 500 })
+      .then((rows) => setRecentList(Array.isArray(rows) ? rows : []))
+      .catch((e) => {
+        setRecentList([]);
+        setRecentListErr(e?.message || String(e));
+      });
+  }, []);
+
+
+useEffect(() => {
+  // Fetch sparklines for the visible list (single batch call).
+  const visible = (data?.items || []).filter((w) => sportMatchesChip(sportChip, w.sport_type)).slice(0, 50);
+  const ids = visible.map((w) => w.id).filter((x) => x != null);
+
+  if (!ids.length) {
+    setSparklinesById({});
+    return;
+  }
+
+  fetchSparklines({ workoutIds: ids, maxPoints: 60, metricMode: "auto" })
+    .then((res) => setSparklinesById(res?.sparklines || {}))
+    .catch(() => setSparklinesById({}));
+}, [data, sportChip]);
+
+
+  const itemsRaw = data?.items || [];
+  const items = useMemo(
+    () => itemsRaw.filter((w) => sportMatchesChip(sportChip, w.sport_type)),
+    [itemsRaw, sportChip]
+  );
+
+  const daily = useMemo(() => groupDaily(items), [items]);
+
+  const distMi = items.reduce((a, w) => a + clampNum(w.distance_m) * M_TO_MI, 0);
+  const elevFt = items.reduce((a, w) => a + clampNum(w.elevation_gain_m) * M_TO_FT, 0);
+  const durHr = items.reduce((a, w) => a + clampNum(w.duration_s) / 3600, 0);
+
+  const recentOptions = useMemo(() => (recentList.length ? recentList : items).slice(0, 120), [recentList, items]);
+
+  useEffect(() => {
+    // Keep selection stable across filter/range changes.
+    if (!recentOptions.length) {
+      setRecentActivityId(null);
+      return;
+    }
+    const current = recentOptions.find((w) => String(w.id) === String(recentActivityId));
+    if (!current) setRecentActivityId(recentOptions[0].id);
+  }, [recentOptions, recentActivityId]);
+
+
+  useEffect(() => {
+    let alive = true;
+    async function run() {
+      if (!recentActivityId) {
+        setRecentCtx(null);
+        setRecentCtxErr(null);
+        return;
+      }
+      try {
+        const ctx = await fetchWorkoutContext(recentActivityId);
+        if (!alive) return;
+        setRecentCtx(ctx);
+        setRecentCtxErr(null);
+      } catch (e) {
+        if (!alive) return;
+        setRecentCtx(null);
+        setRecentCtxErr(String(e?.message || e));
+      }
+    }
+    run();
+    return () => {
+      alive = false;
+    };
+  }, [recentActivityId]);
+
+  const recentSelected = useMemo(() => {
+    if (!recentOptions.length) return null;
+    const found = recentOptions.find((w) => String(w.id) === String(recentActivityId));
+    return found || recentOptions[0];
+  }, [recentOptions, recentActivityId]);
+
+  const topSportLabel = useMemo(() => {
+    const opt = SPORT_CHIP_OPTIONS.find((x) => x.key === sportChip);
+    return opt ? opt.label : "All";
+  }, [sportChip]);
+
+  function applyCustomRange() {
+    const from = customRange?.from;
+    const to = customRange?.to;
+    if (!from || !to) return;
+    setPreset("custom");
+    setStart(isoDate(from));
+    setEnd(isoDate(to));
+    setRangeOpen(false);
+  }
+
+  return (
+    <div className="mc">
+      <header className="mcTop">
+        <div className="brand">
+          <div className="logo" aria-hidden="true">
+            <div className="dot" />
+          </div>
+          <div className="brandText">
+            <div className="brandTitle">TRAILOPS</div>
+            <div className="brandSub">Mission console • local-first • private</div>
+          </div>
+        </div>
+
+        <div className="topFilters">
+          {/* RANGE chip */}
+          <div className="chipWrap" ref={rangeRef}>
+            <button
+              className={"chip accent btnChip " + (rangeOpen ? "open" : "")}
+              onClick={() => setRangeOpen((v) => !v)}
+              aria-expanded={rangeOpen}
+              title="Change date range"
+            >
+              <span className="chipK">RANGE</span>
+              <span className="chipV">
+                {start} → {end}
+              </span>
+              <span className="chev" aria-hidden="true">
+                ▾
+              </span>
+            </button>
+
+            {rangeOpen && (
+              <div className="popover popRange">
+                <div className="popHdr">DATE RANGE</div>
+
+                <div className="popSection">
+                  <div className="popLab">Presets</div>
+                  <div className="popList">
+                    {RANGE_PRESETS.map((p) => (
+                      <button
+                        key={p.key}
+                        className={"popItem " + (preset === p.key ? "active" : "")}
+                        onClick={() => {
+                          setPreset(p.key);
+                          setRangeOpen(false);
+                        }}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="popSection">
+                  <div className="popLab">Custom</div>
+                  <div className="calWrap">
+                    <DayPicker
+                      mode="range"
+                      selected={customRange}
+                      onSelect={setCustomRange}
+                      numberOfMonths={1}
+                      captionLayout="dropdown"
+                    />
+                    <div className="calFoot">
+                      <div className="calVals mono">
+                        <span>{customRange?.from ? isoDate(customRange.from) : "start"}</span>
+                        <span className="dot">•</span>
+                        <span>{customRange?.to ? isoDate(customRange.to) : "end"}</span>
+                      </div>
+                      <button
+                        className="pillBtn"
+                        onClick={applyCustomRange}
+                        disabled={!customRange?.from || !customRange?.to}
+                      >
+                        Apply
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* SPORT chip */}
+          <div className="chipWrap" ref={sportRef}>
+            <button
+              className={"chip btnChip " + (sportOpen ? "open" : "")}
+              onClick={() => setSportOpen((v) => !v)}
+              aria-expanded={sportOpen}
+              title="Filter by sport"
+            >
+              <span className="chipK">SPORT</span>
+              <span className="chipV">{topSportLabel.toUpperCase()}</span>
+              <span className="chev" aria-hidden="true">
+                ▾
+              </span>
+            </button>
+
+            {sportOpen && (
+              <div className="popover popSport">
+                <div className="popHdr">SPORT</div>
+                <div className="popList">
+                  {SPORT_CHIP_OPTIONS.map((o) => (
+                    <button
+                      key={o.key}
+                      className={"popItem " + (sportChip === o.key ? "active" : "")}
+                      onClick={() => {
+                        setSportChip(o.key);
+                        setSportOpen(false);
+                      }}
+                    >
+                      {o.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className={"chip " + (health ? "ok" : "warn")}
+               title={health ? "API reachable" : "API not reachable"}>
+            <span className="chipK">API</span>
+            <span className="chipV">{health ? "OK" : "DOWN"}</span>
+          </div>
+
+          <div className="chip">
+            <span className="chipK">MODE</span>
+            <span className="chipV">LOCAL</span>
+          </div>
+        </div>
+      </header>
+
+      {/* KPI row (ordered as requested) */}
+      <section className="kpiRow">
+        <div className="kpi topKpi hoverGlow">
+          <div className="kpiK">TIME ON FEET</div>
+          <div className="kpiV">
+            {nf1.format(durHr)}
+            <span className="kpiUnit"> hr</span>
+          </div>
+          <div className="kpiHint">range</div>
+          <div className="kpiHelp">Total duration across the selected range.</div>
+        </div>
+
+        <div className="kpi topKpi hoverGlow">
+          <div className="kpiK">DISTANCE</div>
+          <div className="kpiV">
+            {nf1.format(distMi)}
+            <span className="kpiUnit"> mi</span>
+          </div>
+          <div className="kpiHint">range</div>
+          <div className="kpiHelp">Total distance across the selected range.</div>
+        </div>
+
+        <div className="kpi topKpi hoverGlow">
+          <div className="kpiK">ELEVATION GAIN</div>
+          <div className="kpiV">
+            {nf0.format(elevFt)}
+            <span className="kpiUnit"> ft</span>
+          </div>
+          <div className="kpiHint">range</div>
+          <div className="kpiHelp">Total elevation gain across the selected range.</div>
+        </div>
+
+        <div className="kpi topKpi hoverGlow">
+          <div className="kpiK">VO2 MAX</div>
+          <div className="kpiV">—</div>
+          <div className="kpiHint muted">placeholder</div>
+          <div className="kpiHelp">Estimated aerobic fitness. We’ll wire this later.</div>
+        </div>
+
+        <div className="kpi topKpi hoverGlow">
+          <div className="kpiK">RESTING HEART RATE</div>
+          <div className="kpiV">—</div>
+          <div className="kpiHint muted">placeholder</div>
+          <div className="kpiHelp">Resting HR trend. Needs an endpoint later.</div>
+        </div>
+
+        <div className="kpi topKpi hoverGlow">
+          <div className="kpiK">WORKOUTS</div>
+          <div className="kpiV">{nf0.format(items.length)}</div>
+          <div className="kpiHint okDot">loaded</div>
+          <div className="kpiHelp">Count of workouts in the selected range.</div>
+        </div>
+      </section>
+
+      <section className="alerts">
+        <div className="alertsLeft">
+          <span className="badge">ALERTS & ANOMALIES</span>
+          <span className="alertsHint">Stub. This becomes interactive later.</span>
+        </div>
+        <div className="alertsRight">
+          <span className="pill warn">LOAD elevated</span>
+          <span className="pill muted">HR DRIFT on climbs</span>
+          <span className="pill ok">RHR stable</span>
+        </div>
+      </section>
+
+      <section className="mainGrid">
+        <div className="panel span2">
+          <div className="panelHdr">
+            <div className="panelTitle">PRIMARY TELEMETRY</div>
+            <div className="panelSub">
+              Distance by day (line) + elevation by day (bars). More modes later.
+            </div>
+          </div>
+
+          <div className="chartWrap">
+            <ResponsiveContainer width="100%" height={320}>
+              <ComposedChart data={daily}>
+                <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
+                <XAxis
+                  dataKey="day"
+                  tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 12 }}
+                />
+                <YAxis yAxisId="left" tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 12 }} />
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 12 }}
+                />
+                <Tooltip content={<SparkTooltip />} />
+                <Bar yAxisId="right" dataKey="elevFt" fill="rgba(255,138,31,0.35)" />
+                <Line
+                  yAxisId="left"
+                  type="monotone"
+                  dataKey="distMi"
+                  stroke="rgba(255,255,255,0.78)"
+                  strokeWidth={2}
+                  dot={false}
+                />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div className="panelFoot">
+            {dataErr ? (
+              <span className="err">Failed to load workouts: {String(dataErr.message || dataErr)}</span>
+            ) : (
+              <span className="mutedLine">
+                Showing {nf0.format(items.length)} workouts • {nf0.format(daily.length)} days • Sport: {topSportLabel.toLowerCase()}
+              </span>
+            )}
+            {healthErr && (
+              <span className="err">API health check failed: {String(healthErr.message || healthErr)}</span>
+            )}
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="panelHdr panelHdrRow">
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
+              <div className="panelTitle">RECENT ACTIVITY</div>
+
+              <div className="recentHdrTop">
+                <div className="recentHdrLeft">
+                  <div className="recentHdrSport">
+                    {recentSelected ? displaySportType(recentSelected.sport_type) : "—"}
+                  </div>
+                  <div className="recentHdrDate mono">
+                    {recentSelected ? fmtRecentDateTime(recentSelected.start_time) : "—"}
+                  </div>
+                </div>
+
+                <div className="panelControls recentHdrRight">
+                  <select
+                    className="sel"
+                    value={recentActivityId ?? ""}
+                    onChange={(e) => setRecentActivityId(e.target.value)}
+                    style={{ maxWidth: 320 }}
+                    title="Select recent activity"
+                  >
+                    {recentOptions.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {String(w.start_time || "").slice(0, 16).replace("T", " ")} • {displaySportType(w.sport_type)} • #{w.id}
+                      </option>
+                    ))}
+                  </select>
+                  {recentSelected ? (
+                    <div className="panelSub mono" style={{ textAlign: "right", fontSize: 12, marginTop: 0 }}>#{recentSelected.id}</div>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="ctxRow ctxRowLeft">
+                {recentCtxErr ? <div className="ctxErr mono">ctx: {recentCtxErr}</div> : null}
+
+                {!recentCtx ? null : (
+                  <>
+                    <CtxPill kind="location" icon={<PinIcon />} label="Location" value={formatLocationShort(recentCtx?.location?.label)} />
+                    <CtxPill kind="surface" icon={<RoadIcon />} label="Surface" value={surfaceLabel(recentCtx?.surface?.primary)} />
+                    <CtxPill kind="peaks" icon={<MountainIcon />} label="Peaks" value={String(recentCtx?.peaks?.count ?? 0)} />
+                    <CtxPill
+                      kind="weather"
+                      icon={<WeatherIcon kind={weatherKind(recentCtx?.weather)} />}
+                      label="Weather"
+                      value={recentCtx?.weather ? formatWeather(recentCtx.weather) : "–"}
+                    />
+                    {hasMoon(recentCtx?.weather) ? (
+                      <CtxPill
+                        kind="moon"
+                        icon={<MoonPhaseIcon phase={moonPhaseKind(recentCtx?.weather?.moon_phase_name)} />}
+                        label="Moon"
+                        value={formatMoon(recentCtx?.weather)}
+                      />
+                    ) : null}
+                  </>
+                )}
+              </div>
+
+              <div className="panelSub">
+                {recentListErr ? (
+                  <span className="err">Recent list error: {String(recentListErr)}</span>
+                ) : (
+                  <span className="mutedLine"></span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {recentSelected ? (
+            <div className="recent">
+<div className="ctxRow">
+                  {recentCtxErr ? <div className="ctxErr mono">ctx: {recentCtxErr}</div> : null}
+
+                  {!recentCtx ? null : (
+                    <>
+                      <CtxPill kind="location" icon={<PinIcon />} label="Location" value={formatLocationShort(recentCtx?.location?.label)} />
+                      <CtxPill kind="surface" icon={<RoadIcon />} label="Surface" value={surfaceLabel(recentCtx?.surface?.primary)} />
+                      <CtxPill kind="peaks" icon={<MountainIcon />} label="Peaks" value={String(recentCtx?.peaks?.count ?? 0)} />
+                      <CtxPill
+                        kind="weather"
+                        icon={<WeatherIcon kind={weatherKind(recentCtx?.weather)} />}
+                        label="Weather"
+                        value={recentCtx?.weather ? formatWeather(recentCtx.weather) : "–"}
+                      />
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* Map placeholder: moved above stats */}
+              <div className="mapStub" style={{ marginTop: 10 }}>
+                <div className="mapStubHdr">ROUTE MAP</div>
+                <div className="mapStubBody">Map comes next (Phase 2B). No need to “rebuild” logic, just a new renderer.</div>
+              </div>
+
+              {/* Stats */}
+              {(() => {
+                const movingTimeS = firstNumber(recentSelected, ["moving_time_s", "movingTime_s", "moving_time"]);
+                const avgHr = firstNumber(recentSelected, ["avg_heart_rate", "avg_hr", "avgHr"]);
+                const movingPace = firstNumber(recentSelected, ["moving_pace_min_per_mile", "movingPace", "moving_pace"]);
+                const avgGap = firstNumber(recentSelected, ["avg_gap_min_per_mile", "avgGap", "avg_gap"]);
+
+                return (
+                  <div className="miniStats">
+                    <div className="mini">
+                      <div className="k">Distance</div>
+                      <div className="v">{nf1.format(clampNum(recentSelected.distance_m) * M_TO_MI)} mi</div>
+                    </div>
+                    <div className="mini">
+                      <div className="k">Time</div>
+                      <div className="v">{fmtHMS(firstNumber(recentSelected, ["duration_s", "duration"]))}</div>
+                    </div>
+                    <div className="mini">
+                      <div className="k">Elevation</div>
+                      <div className="v">{nf0.format(Math.round(clampNum(recentSelected.elevation_gain_m) * M_TO_FT))} ft</div>
+                    </div>
+                    <div className="mini">
+                      <div className="k">Moving time</div>
+                      <div className="v">
+                        {fmtHMS(movingTimeS)}
+                      </div>
+                    </div>
+                    <div className="mini">
+                      <div className="k">Avg HR</div>
+                      <div className="v">{Number.isFinite(avgHr) && avgHr > 0 ? `${nf0.format(Math.round(avgHr))} bpm` : "—"}</div>
+                    </div>
+                    <div className="mini">
+                      <div className="k">Avg moving pace</div>
+                      <div className="v">{Number.isFinite(movingPace) && movingPace > 0 ? `${formatPace(movingPace)}/mi` : "—"}</div>
+                    </div>
+                    <div className="mini">
+                      <div className="k">Avg GAP</div>
+                      <div className="v">{Number.isFinite(avgGap) && avgGap > 0 ? `${formatPace(avgGap)}/mi` : "—"}</div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              
+              {/* Peaks visited */}
+              <div className="miniStats" style={{ marginTop: 10 }}>
+                <div className="mini" style={{ gridColumn: "1 / -1" }}>
+                  <div className="k">Peaks / POIs visited</div>
+                  <div className="v" style={{ display: "block", marginTop: 6, lineHeight: 1.5 }}>
+                    {recentCtx?.peaks?.items?.length ? (
+                      <div className="peakList">
+                        {recentCtx.peaks.items.slice(0, 12).map((p, i) => (
+                          <div className="peakItem" key={`${p.name}-${i}`}>
+                            <span className="peakDot" />
+                            <span className="peakName">{p.name}</span>
+                            {p.ele_m != null ? <span className="peakEle mono">{Math.round(p.ele_m)} m</span> : null}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="mono">–</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+<div className="recentBtns">
+                <button className="btn" disabled>
+                  OPEN ACTIVITY
+                </button>
+                <button className="btn ghost" disabled>
+                  EXPLAIN
+                </button>
+              </div>
+
+              <div className="coachSummary">
+                <div className="coachLabel">COACH SUMMARY</div>
+                <div className="coachText">Placeholder. This will be filled by the coach later.</div>
+              </div>
+            </div>
+          ) : (
+            <div className="empty">No workouts in range.</div>
+          )}
+        </div>
+
+        <div className="panel coach">
+          <div className="panelHdr">
+            <div className="panelTitle">AI COACH</div>
+            <div className="panelSub">Placeholder shell. We wire chat + actions later.</div>
+          </div>
+
+          <div className="coachBody">
+            <div className="coachMsg sys">
+              <div className="mono">System:</div>
+              <div className="mutedLine">Coach will drive filters and query panels through the API.</div>
+            </div>
+
+            <div className="coachMsg user">
+              <div className="mono">You:</div>
+              <div className="mutedLine">“Show last 14 days and focus on distance.”</div>
+            </div>
+
+            <div className="coachMsg coach">
+              <div className="mono">Coach:</div>
+              <div className="mutedLine">
+                Switching range preset to <b>Last 14 days</b>.
+              </div>
+              <button className="pillBtn" onClick={() => setPreset("last14")}>
+                Apply
+              </button>
+            </div>
+          </div>
+
+          <div className="coachInput">
+            <input
+              placeholder="Ask: 'show GAP monthly' • 'surface last 12' • 'HR drift on climbs'"
+              disabled
+            />
+            <button className="send" disabled>
+              SEND
+            </button>
+          </div>
+        </div>
+        <section className="lowerGrid">
+  <div className="panel span2 peaksPanel">
+    <div className="panelHdr panelHdrRow">
+      <div>
+        <div className="panelTitle">PEAKS • LISTS • PROGRESS</div>
+        <div className="panelSub">Stub UI. Real peak maths lands when the API exposes peak hits, unique peaks, and class totals.</div>
+      </div>
+      <div className="panelControls">
+        <select className="sel" value={peaksSummaryMode} onChange={(e) => setPeaksSummaryMode(e.target.value)}>
+          <option value="ai">AI SUMMARY</option>
+          <option value="manual">MANUAL</option>
+        </select>
+        <select className="sel" value={peaksRange} onChange={(e) => setPeaksRange(e.target.value)}>
+          <option value="7d">RANGE 7D</option>
+          <option value="30d">RANGE 30D</option>
+          <option value="12m">RANGE 12M</option>
+          <option value="all">RANGE ALL</option>
+        </select>
+        <select className="sel" value={peaksClass} onChange={(e) => setPeaksClass(e.target.value)}>
+          {PEAK_CLASSES.map((c) => (
+            <option key={c.value} value={c.value}>
+              CLASS {c.label.toUpperCase()}
+            </option>
+          ))}
+        </select>
+      </div>
+    </div>
+
+    <div className="peaksTopRow">
+      <div className="miniCard">
+        <div className="miniK">PEAKS BAGGED</div>
+        <div className="miniV">9</div>
+        <div className="miniS">12w</div>
+      </div>
+      <div className="miniCard">
+        <div className="miniK">UNIQUE PEAKS</div>
+        <div className="miniV">7</div>
+        <div className="miniS">12w • 2 repeats</div>
+      </div>
+      <div className="miniCard">
+        <div className="miniK">LIFETIME UNIQUE</div>
+        <div className="miniV">64</div>
+        <div className="miniS">tracked</div>
+      </div>
+      <div className="miniCard">
+        <div className="miniK">PEAK RATE</div>
+        <div className="miniV">0.58</div>
+        <div className="miniS">/wk • rolling</div>
+      </div>
+    </div>
+
+    <div className="peaksBody">
+      <div className="peaksLeft">
+        <div className="subPanel">
+          <div className="subHdr">PEAK HITS • LAST 30 DAYS</div>
+          <div className="dowHdr">
+            {["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"].map((d) => (
+              <div key={d} className="dowCell">{d}</div>
+            ))}
+            <div className="lowHigh">LOW → HIGH</div>
+          </div>
+
+          <div className="hitGrid">
+            {PEAK_HIT_WEEKS.map((week, wi) => (
+              <div key={wi} className="hitRow">
+                {week.map((v, di) => (
+                  <div key={di} className={`hitCell hit${v}`} title={`${v} hits`} />
+                ))}
+              </div>
+            ))}
+          </div>
+
+          <div className="legend">
+            <div className="legendLabel">LEGEND</div>
+            <div className="legendSwatches">
+              <span className="sw sw0" /> <span className="swLab">0</span>
+              <span className="sw sw1" /> <span className="swLab">1</span>
+              <span className="sw sw2" /> <span className="swLab">2</span>
+              <span className="sw sw3" /> <span className="swLab">3+</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="peaksRight">
+        <div className="subPanel">
+          <div className="subHdrRow">
+            <div className="subHdr">CLASS TRACKERS</div>
+            <div className="subMeta">{peaksClass.toUpperCase()}</div>
+          </div>
+
+          {CLASS_TRACKERS.map((t) => (
+            <div key={t.key} className="tracker">
+              <div className="trackerTop">
+                <div className="trackerName">{t.label.toUpperCase()}</div>
+                <div className="trackerCount">{t.done} / {t.total}</div>
+              </div>
+              <div className="barOuter">
+                <div className="barInner" style={{ width: `${Math.min(100, Math.round((t.done / t.total) * 100))}%` }} />
+              </div>
+              <div className="trackerSub">{t.note}</div>
+            </div>
+          ))}
+
+          <div className="topVisitedHdr">
+            <div className="subHdr">TOP VISITED • {peaksClass.toUpperCase()}</div>
+            <div className="subMeta">ALL-TIME</div>
+          </div>
+
+          <div className="topVisited">
+            {TOP_VISITED.map((p) => (
+              <div key={p.name} className="topRow">
+                <div className="topName">{p.name.toUpperCase()}</div>
+                <div className="topSub">last: {p.last}</div>
+                <div className="topCount">{p.count}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div className="coachSum">
+      <div className="coachSumTitle">COACH SUMMARY</div>
+      <div className="coachSumBody">
+        When peak data is wired, coach will point out what’s trending (new peaks, repeats, and progress pacing vs target).
+      </div>
+    </div>
+  </div>
+
+  <div className="panel span2">
+    <div className="panelHdr">
+      <div className="panelTitle">SNAPSHOT</div>
+      <div className="panelSub">4 quick charts. Real metrics land as API expands.</div>
+    </div>
+
+    <div className="snapGrid">
+      <div className="snap">
+        <div className="snapK">PACE VS GAP</div>
+        <div className="snapV">Placeholder</div>
+      </div>
+      <div className="snap">
+        <div className="snapK">HR ZONES</div>
+        <div className="snapV">Placeholder</div>
+      </div>
+      <div className="snap">
+        <div className="snapK">TERRAIN MIX</div>
+        <div className="snapV">Placeholder</div>
+      </div>
+      <div className="snap">
+        <div className="snapK">PEAK HITS</div>
+        <div className="snapV">Placeholder</div>
+      </div>
+    </div>
+
+    <div className="coachSum">
+      <div className="coachSumTitle">COACH SUMMARY</div>
+      <div className="coachSumBody">Coach will summarise what these charts mean once the AI layer is plugged in.</div>
+    </div>
+  </div>
+</section>
+
+
+
+        <div className="panel span2">
+          <div className="panelHdr">
+            <div className="panelTitle">RECENT WORKOUTS</div>
+            <div className="panelSub">Fixed height + scroll. Activities page later.</div>
+          </div>
+
+          <div className="list scrollList">
+            {items.slice(0, 50).map((w) => (
+              <div key={w.id} className="row">
+                <div className="rowMain">
+                  <div className="rowTop">
+                    <span className="mono">{fmtMonospace(w.start_time)}</span>
+                    <span className="pill">{displaySportType(w.sport_type)}</span>
+
+                    {/* Quick-glance mini chart per workout (placeholder; API wiring later). */}
+                    <Sparkline data={sparklinesById[String(w.id)]} fallbackStat={statForWorkout(w)} seed={w.id} />
+                  </div>
+                  <div className="rowSub">
+                    <span>{nf1.format(clampNum(w.distance_m) * M_TO_MI)} mi</span>
+                    <span className="dot">•</span>
+                    <span>{nf0.format(Math.round(clampNum(w.duration_s) / 60))} min</span>
+                    <span className="dot">•</span>
+                    <span>{nf0.format(Math.round(clampNum(w.elevation_gain_m) * M_TO_FT))} ft</span>
+
+                    {Number.isFinite(Number(w.avg_heart_rate)) && (
+                      <>
+                        <span className="dot">•</span>
+                        <span>Avg HR {nf0.format(Number(w.avg_heart_rate))}</span>
+                      </>
+                    )}
+
+                    {Number.isFinite(Number(w.avg_gap_min_per_mile)) && (
+                      <>
+                        <span className="dot">•</span>
+                        <span>Avg GAP {formatPace(Number(w.avg_gap_min_per_mile))}/mi</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rowId mono">#{w.id}</div>
+              </div>
+            ))}
+            {!data && !dataErr && <div className="mutedLine">Loading…</div>}
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+function fmtHMS(seconds) {
+  const s = Number(seconds);
+  if (!Number.isFinite(s) || s <= 0) return "—";
+  const total = Math.round(s);
+  const hh = Math.floor(total / 3600);
+  const mm = Math.floor((total % 3600) / 60);
+  const ss = total % 60;
+  const mm2 = String(mm).padStart(2, "0");
+  const ss2 = String(ss).padStart(2, "0");
+  return hh > 0 ? `${hh}:${mm2}:${ss2}` : `${mm}:${ss2}`;
+}
+
+}

@@ -1,0 +1,1235 @@
+from __future__ import annotations
+
+import datetime
+import math
+from datetime import timezone, timedelta
+
+import numpy as np
+import pandas as pd
+import streamlit as st
+import folium
+from branca.element import MacroElement, Template
+
+try:
+    from streamlit_folium import st_folium
+except Exception:
+    st_folium = None
+
+import pydeck as pdk
+import plotly.graph_objects as go
+
+from app.db.database import get_connection
+from app.analysis.training_summary import get_training_summary
+
+
+
+from app.analysis.route_context import get_route_context, get_surface_stats, get_peak_hits, get_geo_areas, get_weather, get_peak_visits
+from app.analysis.map_points import (
+    get_available_map_levels,
+    get_map_points,
+    get_markers,
+    add_marker,
+    delete_marker,
+)
+# ----------------------------
+# Sport label helpers
+# ----------------------------
+SPORT_LABEL_OVERRIDES = {
+    "running:generic": "Run (outdoor)",
+    "running:indoor_running": "Run (indoor)",
+    "cycling:indoor_cycling": "Cycling (indoor)",
+    "cycling:road": "Cycling (road)",
+    "walking:walking": "Walk",
+    "hiking:hiking": "Hike",
+    "fitness_equipment:stair_climbing": "Stair climber",
+    "generic:generic": "Cooldown",
+    # HIIT appears as a numeric code in some HealthFit exports
+    "62:70": "HIIT",
+    "62 (70)": "HIIT",
+    "62(70)": "HIIT",
+}
+
+
+def format_sport_label(raw: str) -> str:
+    if not raw:
+        return "Unknown"
+
+    raw_s = str(raw).strip()
+
+    # Exact overrides first
+    if raw_s in SPORT_LABEL_OVERRIDES:
+        return SPORT_LABEL_OVERRIDES[raw_s]
+
+    # Try last segment after ':' (some sources prefix the code)
+    last = raw_s.split(":")[-1].strip()
+    if last in SPORT_LABEL_OVERRIDES:
+        return SPORT_LABEL_OVERRIDES[last]
+
+    # Try no-space variant
+    last_nospace = last.replace(" ", "")
+    if last_nospace in SPORT_LABEL_OVERRIDES:
+        return SPORT_LABEL_OVERRIDES[last_nospace]
+
+    parts = raw_s.split(":")
+
+    def prettify(s: str) -> str:
+        s = s.replace("_", " ")
+        return s[:1].upper() + s[1:] if s else s
+
+    parts = [prettify(p) for p in parts]
+    return parts[0] if len(parts) == 1 else f"{parts[0]} ({parts[1]})"
+
+
+    def prettify(s: str) -> str:
+        s = s.replace("_", " ")
+        return s[:1].upper() + s[1:] if s else s
+
+    parts = [prettify(p) for p in parts]
+    if len(parts) == 1:
+        return parts[0]
+    return f"{parts[0]} ({parts[1]})"
+
+
+def classify_sport_for_totals(raw: str | None) -> str:
+    if not raw:
+        return "other"
+    s = raw.lower()
+    if "stair" in s or "step" in s:
+        return "stair"
+    if "walk" in s or "hike" in s:
+        return "walking"
+    if "run" in s:
+        return "running"
+    return "other"
+
+
+# ----------------------------
+# Date range helper
+# ----------------------------
+def get_date_range(mode: str) -> tuple[datetime.date | None, datetime.date | None]:
+    today = datetime.date.today()
+    this_monday = today - datetime.timedelta(days=today.weekday())
+    first_of_this_month = today.replace(day=1)
+
+    if mode == "Last 7 days":
+        return today - datetime.timedelta(days=6), today
+    if mode == "Last 14 days":
+        return today - datetime.timedelta(days=13), today
+    if mode == "This week":
+        return this_monday, today
+    if mode == "Last week":
+        last_week_monday = this_monday - datetime.timedelta(days=7)
+        last_week_sunday = this_monday - datetime.timedelta(days=1)
+        return last_week_monday, last_week_sunday
+    if mode == "This month":
+        return first_of_this_month, today
+    if mode == "Last month":
+        last_month_end = first_of_this_month - datetime.timedelta(days=1)
+        last_month_start = last_month_end.replace(day=1)
+        return last_month_start, last_month_end
+    if mode == "Lifetime":
+        return None, None
+
+    return None, None
+
+
+# ----------------------------
+# Cached DB access helpers
+# ----------------------------
+@st.cache_data(show_spinner=False)
+def get_recent_workouts(limit: int = 200) -> pd.DataFrame:
+    conn = get_connection()
+    try:
+        df = pd.read_sql_query(
+            """
+            SELECT
+                id,
+                start_time,
+                sport_type,
+                distance_m,
+                duration_s,
+                elevation_gain_m,
+                avg_heart_rate,
+                max_heart_rate
+            FROM workouts
+            ORDER BY start_time DESC
+            LIMIT ?;
+            """,
+            conn,
+            params=(limit,),
+        )
+    finally:
+        conn.close()
+
+    if df.empty:
+        return df
+
+    # Ensure correct dtypes (SQLite sometimes returns strings)
+    numeric_cols = ["distance_m", "duration_s", "elevation_gain_m"]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+    df["start_time"] = pd.to_datetime(df["start_time"], errors="coerce")
+
+    df["distance_mi"] = (df["distance_m"] / 1609.344).round(2)
+    df["duration_min"] = (df["duration_s"] / 60.0).round(1)
+    df["elevation_gain_ft"] = (df["elevation_gain_m"] * 3.28084).round(0)
+
+    df = df[
+        [
+            "start_time",
+            "sport_type",
+            "distance_mi",
+            "duration_min",
+            "elevation_gain_ft",
+            "avg_heart_rate",
+            "max_heart_rate",
+            "id",
+        ]
+    ]
+
+    return df
+
+
+@st.cache_data(show_spinner=False)
+def get_workout_detail(workout_id: int) -> dict | None:
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            SELECT
+                id,
+                start_time,
+                end_time,
+                sport_type,
+                distance_m,
+                duration_s,
+                elevation_gain_m,
+                avg_heart_rate,
+                max_heart_rate,
+                notes,
+                avg_gap_min_per_mile,
+                moving_time_s,
+                stationary_time_s,
+                moving_pace_min_per_mile
+            FROM workouts
+            WHERE id = ?;
+            """,
+            (workout_id,),
+        )
+        row = cursor.fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        return None
+
+    (
+        wid,
+        start_time,
+        end_time,
+        sport_type,
+        distance_m,
+        duration_s,
+        elevation_gain_m,
+        avg_hr,
+        max_hr,
+        notes,
+        avg_gap_min_per_mile,
+        moving_time_s,
+        stationary_time_s,
+        moving_pace_min_per_mile,
+    ) = row
+
+    distance_m = float(distance_m or 0.0)
+    duration_s = float(duration_s or 0.0)
+    elevation_m = float(elevation_gain_m or 0.0)
+
+    distance_mi = distance_m / 1609.344
+    elevation_ft = elevation_m * 3.28084
+
+    pace_min_per_mile = None
+    if distance_mi > 0:
+        pace_min_per_mile = (duration_s / 60) / distance_mi
+
+    return {
+        "id": wid,
+        "start_time": start_time,
+        "end_time": end_time,
+        "sport_type": sport_type,
+        "distance_m": distance_m,
+        "distance_mi": distance_mi,
+        "duration_s": duration_s,
+        "elevation_m": elevation_m,
+        "elevation_ft": elevation_ft,
+        "avg_heart_rate": avg_hr,
+        "max_heart_rate": max_hr,
+        "pace_min_per_mile": pace_min_per_mile,
+        "notes": notes,
+        "avg_gap_min_per_mile": avg_gap_min_per_mile,
+        "moving_time_s": moving_time_s,
+        "stationary_time_s": stationary_time_s,
+        "moving_pace_min_per_mile": moving_pace_min_per_mile,
+    }
+
+
+def _is_allowed_detailed_sport(sport_type: str) -> bool:
+    s = sport_type.lower()
+    # Allow: running*, walking*, hiking*, and trail variants
+    if s.startswith("running") or s.startswith("walking") or s.startswith("hiking"):
+        return True
+    if "trail" in s and ("run" in s or "walk" in s or "hike" in s):
+        return True
+    return False
+
+
+@st.cache_data(show_spinner=False)
+def get_workout_plot_samples_if_allowed(
+    workout_id: int,
+    sport_type: str | None,
+    start_time_str: str | None,
+) -> pd.DataFrame:
+    """
+    Load chart-ready samples from workout_plot_samples ONLY IF:
+    - sport_type is running OR walking OR hiking (incl trail variants)
+    - AND workout is within last 30 days
+    """
+    if not sport_type or not start_time_str:
+        return pd.DataFrame()
+
+    if not _is_allowed_detailed_sport(sport_type):
+        return pd.DataFrame()
+
+    try:
+        dt = datetime.datetime.fromisoformat(start_time_str)
+    except Exception:
+        return pd.DataFrame()
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    now_utc = datetime.datetime.now(timezone.utc)
+    if dt < (now_utc - timedelta(days=30)):
+        return pd.DataFrame()
+
+    conn = get_connection()
+    try:
+        df = pd.read_sql_query(
+            """
+            SELECT
+                t_min,
+                pace_min_per_mile,
+                gap_min_per_mile,
+                grade_pct,
+                elevation_ft,
+                heart_rate_bpm,
+                cadence_spm,
+                power_w
+            FROM workout_plot_samples
+            WHERE workout_id = ?
+            ORDER BY t_min ASC;
+            """,
+            conn,
+            params=(workout_id,),
+        )
+    finally:
+        conn.close()
+
+    return df
+
+
+def _plot_series(df: pd.DataFrame, x: str, y: str, title: str, y_label: str) -> None:
+    if df is None or df.empty or x not in df.columns or y not in df.columns:
+        st.info(f"No {title.lower()} data available.")
+        return
+
+    clean = df[[x, y]].dropna()
+    if clean.empty:
+        st.info(f"No {title.lower()} data available.")
+        return
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scattergl(
+            x=clean[x],
+            y=clean[y],
+            mode="lines",
+            name=title,
+            hovertemplate=f"Time: %{{x:.1f}} min<br>{y_label}: %{{y:.2f}}<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        title=dict(text=title, x=0.0, xanchor="left"),
+        height=260,
+        margin=dict(l=10, r=10, t=30, b=10),
+        hovermode="x",
+    )
+    fig.update_xaxes(title_text="Time (min)")
+    fig.update_yaxes(title_text=y_label)
+
+    # Streamlit deprecation: use width='stretch'
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+
+
+def _format_min_per_mile(v: float | None) -> str:
+    if v is None or not pd.notna(v) or v <= 0:
+        return "N/A"
+    mins = int(v)
+    secs = int(round((v - mins) * 60))
+    if secs == 60:
+        mins += 1
+        secs = 0
+    return f"{mins}:{secs:02d} min/mi"
+
+def _format_hhmmss(seconds: int | float | None) -> str:
+    if seconds is None or not pd.notna(seconds):
+        return "N/A"
+    try:
+        s = int(seconds)
+    except Exception:
+        return "N/A"
+    if s < 0:
+        s = 0
+    return str(datetime.timedelta(seconds=s))
+
+
+
+def _distance_weighted_avg_gap(samples_df: pd.DataFrame) -> float | None:
+    """Compute distance-weighted mean GAP using time deltas and raw pace for distance."""
+    if samples_df is None or samples_df.empty:
+        return None
+    needed = {"t_min", "pace_min_per_mile", "gap_min_per_mile"}
+    if not needed.issubset(samples_df.columns):
+        return None
+
+    df = samples_df[["t_min", "pace_min_per_mile", "gap_min_per_mile"]].copy()
+    df = df.dropna(subset=["t_min", "pace_min_per_mile", "gap_min_per_mile"])
+    if df.empty:
+        return None
+
+    df = df.sort_values("t_min")
+    dt_min = df["t_min"].diff().fillna(0.0)
+
+    # Distance (mi) for each segment ~ dt(min) / pace(min/mi)
+    seg_dist_mi = dt_min / df["pace_min_per_mile"]
+
+    mask = (dt_min > 0) & seg_dist_mi.notna() & (seg_dist_mi > 0)
+    if not mask.any():
+        return None
+
+    w = seg_dist_mi[mask]
+    g = df.loc[mask, "gap_min_per_mile"]
+    total = float(w.sum())
+    if total <= 0:
+        return None
+
+    return float((g * w).sum() / total)
+
+
+
+
+# ----------------------------
+# Route map (pydeck)
+# ----------------------------
+CARTO_LIGHT_STYLE = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
+CARTO_DARK_STYLE = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
+
+
+def _compute_view_state(pts: pd.DataFrame) -> pdk.ViewState:
+    if pts is None or pts.empty:
+        return pdk.ViewState(latitude=51.5074, longitude=-0.1278, zoom=10)
+
+    lat = pts["latitude_deg"].astype(float)
+    lon = pts["longitude_deg"].astype(float)
+
+    lat0 = float(lat.mean())
+    lon0 = float(lon.mean())
+
+    lat_span = float(lat.max() - lat.min())
+    lon_span = float(lon.max() - lon.min())
+    span = max(lat_span, lon_span, 1e-6)
+
+    if span < 0.01:
+        zoom = 14
+    elif span < 0.03:
+        zoom = 13
+    elif span < 0.08:
+        zoom = 12
+    elif span < 0.2:
+        zoom = 11
+    else:
+        zoom = 10
+
+    return pdk.ViewState(latitude=lat0, longitude=lon0, zoom=zoom, pitch=0)
+
+
+
+# ----------------------------
+# Map colour helpers (Map v2 Phase 2.0)
+# ----------------------------
+def _clamp01(x: float) -> float:
+    return 0.0 if x < 0.0 else 1.0 if x > 1.0 else x
+
+
+def _rgb_to_hex(rgb: tuple[int, int, int]) -> str:
+    r, g, b = rgb
+    r = 0 if r < 0 else 255 if r > 255 else r
+    g = 0 if g < 0 else 255 if g > 255 else g
+    b = 0 if b < 0 else 255 if b > 255 else b
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _interp_rgb(a: tuple[int, int, int], b: tuple[int, int, int], t: float) -> tuple[int, int, int]:
+    t = _clamp01(float(t))
+    return (
+        int(round(a[0] + (b[0] - a[0]) * t)),
+        int(round(a[1] + (b[1] - a[1]) * t)),
+        int(round(a[2] + (b[2] - a[2]) * t)),
+    )
+
+
+def _safe_avg2(a: float | int | None, b: float | int | None) -> float | None:
+    """Return the mean of two values without numpy warnings.
+
+    - If both are non-finite/None -> None
+    - If one is finite -> that value
+    - If both finite -> arithmetic mean
+    """
+    try:
+        fa = float(a) if a is not None else float('nan')
+    except Exception:
+        fa = float('nan')
+    try:
+        fb = float(b) if b is not None else float('nan')
+    except Exception:
+        fb = float('nan')
+    a_ok = np.isfinite(fa)
+    b_ok = np.isfinite(fb)
+    if not a_ok and not b_ok:
+        return None
+    if a_ok and not b_ok:
+        return fa
+    if b_ok and not a_ok:
+        return fb
+    return (fa + fb) / 2.0
+
+
+def _colour_for_pace_min_per_mile(pace: float, vmin: float, vmax: float) -> str:
+    # Slow = red, fast = green
+    if not np.isfinite(pace) or not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+        return "#ff7a00"  # fallback orange
+    # pace smaller is faster -> invert
+    t = 1.0 - ((pace - vmin) / (vmax - vmin))
+    red = (255, 0, 51)  # brighter red
+    green = (40, 167, 69)
+    return _rgb_to_hex(_interp_rgb(red, green, t))
+
+
+def _colour_for_grade(grade: float, cap: float = 0.15) -> str:
+    """Colour by grade (rise/run).
+
+    Downhill = blue
+    Flat = purple
+    Uphill = red
+    """
+    if not np.isfinite(grade):
+        return "#ff7a00"
+    if cap <= 0:
+        cap = 0.15
+    g = float(max(-cap, min(cap, grade)))
+    t = (g + cap) / (2.0 * cap)  # 0..1
+    blue = (0, 102, 255)  # brighter blue
+    purple = (111, 66, 193)
+    red = (255, 0, 51)  # brighter red
+    if t < 0.5:
+        return _rgb_to_hex(_interp_rgb(blue, purple, t / 0.5))
+    return _rgb_to_hex(_interp_rgb(purple, red, (t - 0.5) / 0.5))
+
+
+
+def _add_distance_markers(
+    fmap: folium.Map,
+    draw_df: pd.DataFrame,
+    unit: str = "mi",
+    max_markers: int = 80,
+) -> None:
+    """Add subtle distance markers snapped to nearest route points.
+
+    - unit: "mi" or "km"
+    - Uses draw_df columns: lat, lon, distance_m (required)
+    """
+    if draw_df is None or draw_df.empty:
+        return
+    if "distance_m" not in draw_df.columns:
+        return
+
+    dist_m = pd.to_numeric(draw_df["distance_m"], errors="coerce")
+    if dist_m.isna().all():
+        return
+
+    # Ensure increasing-ish
+    dist_m = dist_m.ffill()
+    if dist_m.isna().all():
+        return
+
+    total_m = float(dist_m.max())
+    if not np.isfinite(total_m) or total_m <= 0:
+        return
+
+    step_m = 1609.344 if unit == "mi" else 1000.0
+    label_unit = "mi" if unit == "mi" else "km"
+
+    n_max = int(total_m // step_m)
+    if n_max <= 0:
+        return
+    if n_max > max_markers:
+        # Avoid visual clutter on ultra routes or dense data
+        n_max = max_markers
+
+    # Use a simple DivIcon: tiny dot + label
+    for n in range(1, n_max + 1):
+        target = n * step_m
+        # nearest index where distance >= target
+        try:
+            idxs = dist_m[dist_m >= target].index
+            if len(idxs) == 0:
+                continue
+            i = int(idxs[0])
+        except Exception:
+            continue
+
+        try:
+            lat = float(draw_df.iloc[i]["lat"])
+            lon = float(draw_df.iloc[i]["lon"])
+        except Exception:
+            continue
+
+        html = (
+            "<div style='position: relative; transform: translate(-50%, -50%);'>"
+            "<div style='width:8px;height:8px;border-radius:50%;background:rgba(20,20,20,0.85);"
+            "border:1px solid rgba(255,255,255,0.9);'></div>"
+            f"<div style='position:absolute; left:12px; top:-1px; font-size:11px; line-height:11px;"
+            "color:rgba(20,20,20,0.95); text-shadow: 0 0 3px rgba(255,255,255,0.9);"
+            "font-weight:600; white-space:nowrap;'>"
+            f"{n}{label_unit}</div></div>"
+        )
+
+
+        folium.Marker(
+            location=[lat, lon],
+            icon=folium.DivIcon(html=html),
+            tooltip=f"{n} {label_unit}",
+        ).add_to(fmap)
+
+
+class ZoomToRouteControl(MacroElement):
+    """Leaflet control button to zoom the map back to the route bounds."""
+
+    def __init__(self, bounds: list[list[float]], position: str = "topleft"):
+        super().__init__()
+        self._name = "ZoomToRouteControl"
+        self.bounds = bounds
+        self.position = position
+        self._template = Template(
+            """{% macro script(this, kwargs) %}
+            (function() {
+              var map = {{ this._parent.get_name() }};
+              var bounds = {{ this.bounds | tojson }};
+              var control = L.control({position: {{ this.position | tojson }}});
+              control.onAdd = function(mapObj) {
+                var div = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
+                div.style.backgroundColor = 'white';
+                div.style.width = '34px';
+                div.style.height = '34px';
+                div.style.display = 'flex';
+                div.style.alignItems = 'center';
+                div.style.justifyContent = 'center';
+                div.style.cursor = 'pointer';
+                div.style.boxShadow = '0 1px 4px rgba(0,0,0,0.25)';
+                div.style.fontSize = '18px';
+                div.style.userSelect = 'none';
+                div.title = 'Zoom to route';
+                div.innerHTML = '⌂';
+                L.DomEvent.disableClickPropagation(div);
+                L.DomEvent.on(div, 'click', function(e) {
+                  map.fitBounds(bounds, {padding: [20, 20]});
+                });
+                return div;
+              };
+              control.addTo(map);
+            })();
+            {% endmacro %}"""
+        )
+
+
+def add_zoom_to_route_button(fmap: folium.Map, bounds: list[list[float]]) -> None:
+    """Attach the zoom-to-route Leaflet control."""
+    if not bounds or len(bounds) != 2:
+        return
+    ZoomToRouteControl(bounds=bounds).add_to(fmap)
+
+
+_M_PER_MI = 1609.344
+_KM_PER_MI = 1.609344
+_FT_PER_M = 3.28084
+
+
+def _format_hms(seconds: float | int | None) -> str:
+    if seconds is None or not np.isfinite(float(seconds)) or seconds < 0:
+        return "N/A"
+    s = int(round(float(seconds)))
+    h = s // 3600
+    m = (s % 3600) // 60
+    sec = s % 60
+    if h > 0:
+        return f"{h:d}:{m:02d}:{sec:02d}"
+    return f"{m:d}:{sec:02d}"
+
+
+def _format_pace(min_per_unit: float | int | None, unit_label: str) -> str:
+    if min_per_unit is None:
+        return "N/A"
+    try:
+        v = float(min_per_unit)
+    except Exception:
+        return "N/A"
+    if not np.isfinite(v) or v <= 0:
+        return "N/A"
+    whole = int(math.floor(v))
+    sec = int(round((v - whole) * 60))
+    if sec == 60:
+        whole += 1
+        sec = 0
+    return f"{whole:d}:{sec:02d} / {unit_label}"
+
+
+
+def _render_route_map(
+    workout_id: int,
+    plot_samples_df: pd.DataFrame | None = None,
+    sport_type: str | None = None,
+    start_time_str: str | None = None,
+) -> None:
+    """Render route map using Folium (Leaflet) + OSM/CARTO tiles.
+
+    Map v2 Phase 2.3:
+    - Add elevation profile under the map
+    - Add a cursor (desktop-first) that places a dot on the map
+    - Show stats at the cursor point (distance, elevation, time, pace, HR)
+    """
+    st.markdown("#### Route map")
+    # --- Route context (computed offline via backfill_route_context.py) ---
+    try:
+        rc = get_route_context(workout_id)
+    except Exception:
+        rc = None
+
+    if rc:
+        loc = rc.start_location_label or rc.start_locality or rc.center_location_label or rc.center_locality
+        if loc:
+            st.caption(f"📍 {loc}")
+
+    # Protected areas / regions (start-point based)
+    try:
+        areas = get_geo_areas(workout_id)
+    except Exception:
+        areas = []
+
+    if areas:
+        protected = [a for a in areas if a.area_type == "protected_area"]
+        regions = [a for a in areas if a.area_type == "region"]
+
+        if protected:
+            # show top few; these are usually things like National Parks, AONBs, etc.
+            labels = []
+            for a in protected[:6]:
+                if a.designation:
+                    labels.append(f"{a.name} ({a.designation})")
+                else:
+                    labels.append(a.name)
+            st.caption("🏞 " + " · ".join(labels))
+
+        if regions:
+            st.caption("🗺 " + " · ".join([a.name for a in regions[:6]]))
+
+    # Weather + lunar phase (start vs highest point)
+    try:
+        wrow = get_weather(workout_id)
+    except Exception:
+        wrow = None
+
+    if wrow:
+        start_bits = []
+        if wrow.start_temp_c is not None:
+            start_bits.append(f"{wrow.start_temp_c:.0f}°C")
+        if wrow.start_precip_mm is not None:
+            start_bits.append(f"{wrow.start_precip_mm:.1f}mm rain")
+        if wrow.start_wind_kph is not None:
+            start_bits.append(f"{wrow.start_wind_kph:.0f}kph wind")
+
+        high_bits = []
+        if wrow.high_temp_c is not None:
+            high_bits.append(f"{wrow.high_temp_c:.0f}°C")
+        if wrow.high_precip_mm is not None:
+            high_bits.append(f"{wrow.high_precip_mm:.1f}mm rain")
+        if wrow.high_wind_kph is not None:
+            high_bits.append(f"{wrow.high_wind_kph:.0f}kph wind")
+
+        moon = ""
+        if wrow.moon_phase_name:
+            if wrow.moon_illumination is not None:
+                moon = f" · 🌙 {wrow.moon_phase_name} ({wrow.moon_illumination*100:.0f}% lit)"
+            else:
+                moon = f" · 🌙 {wrow.moon_phase_name}"
+
+        if start_bits or high_bits:
+            st.caption("🌦 Start: " + (", ".join(start_bits) if start_bits else "N/A") +
+                       " | High point: " + (", ".join(high_bits) if high_bits else "N/A") + moon)
+
+
+    # Surface breakdown
+    try:
+        ss = get_surface_stats(workout_id)
+    except Exception:
+        ss = None
+
+    if ss:
+        surface_vals = {
+            "Road": float(ss.road_m),
+            "Paved path": float(ss.paved_path_m),
+            "Trail": float(ss.trail_m),
+            "Track": float(ss.track_m),
+            "Grass": float(ss.grass_m),
+            "Unknown": float(ss.unknown_m),
+        }
+        total_m = sum(surface_vals.values())
+        if total_m > 0:
+            top = sorted(surface_vals.items(), key=lambda kv: kv[1], reverse=True)
+            parts = [f"{k} {v/total_m*100:.0f}%" for k, v in top if v > 0]
+            st.caption("Surface: " + ", ".join(parts[:6]))
+
+    # Peaks (near-visited within threshold distance)
+    try:
+        peaks = get_peak_visits(workout_id)
+    except Exception:
+        peaks = []
+
+    if peaks:
+        with st.expander(f"⛰ Peaks visited ({len(peaks)})", expanded=False):
+            for p in peaks[:50]:
+                name = p.get("name") or f"OSM {p.get('peak_osm_id')}"
+                ele = f"{p.get('ele_m'):.0f} m" if p.get("ele_m") is not None else "ele N/A"
+                visits = int(p.get("visits") or 0)
+                first_seen = p.get("first_seen")
+
+                badge = ""
+                if visits <= 1 and first_seen:
+                    badge = " · 🆕 first visit"
+                elif visits > 1:
+                    badge = f" · 🔁 {visits} visits"
+
+                st.write(f"**{name}** · {ele}{badge}")
+
+
+    # Determine seq range
+    if "seq" in pts.columns and pts["seq"].notna().any():
+        seq_min = int(pd.to_numeric(pts["seq"], errors="coerce").dropna().min())
+        seq_max = int(pd.to_numeric(pts["seq"], errors="coerce").dropna().max())
+    else:
+        seq_min, seq_max = 0, max(0, len(pts) - 1)
+
+    col_a, col_b, col_c = st.columns([1, 2, 1])
+    with col_a:
+        seq_choice = st.number_input(
+            "Point seq",
+            min_value=int(seq_min),
+            max_value=int(seq_max),
+            value=int(seq_min),
+            step=1,
+            key=f"mk_seq_{workout_id}",
+        )
+    with col_b:
+        label = st.text_input("Label", value="Note", key=f"mk_label_{workout_id}")
+    with col_c:
+        kind = st.selectbox(
+            "Kind",
+            ["poi", "aid", "warning", "photo", "custom"],
+            index=0,
+            key=f"mk_kind_{workout_id}",
+        )
+
+    if st.button("Add marker", key=f"mk_add_{workout_id}"):
+        # Choose closest row by seq if available
+        if "seq" in pts.columns:
+            sub = pts[pd.to_numeric(pts["seq"], errors="coerce") == int(seq_choice)]
+            row = sub.iloc[0] if not sub.empty else pts.iloc[0]
+        else:
+            idx = int(seq_choice)
+            idx = max(0, min(idx, len(pts) - 1))
+            row = pts.iloc[idx]
+
+        add_marker(
+            workout_id=workout_id,
+            label=(label.strip() or "Note"),
+            kind=str(kind),
+            latitude_deg=float(row["latitude_deg"]),
+            longitude_deg=float(row["longitude_deg"]),
+            seq=int(seq_choice),
+        )
+        st.success("Marker added. Rerun/refresh to see it on the map.")
+
+    markers_df = get_markers(workout_id)
+    if markers_df is None or markers_df.empty:
+        st.write("No custom markers yet.")
+        return
+
+    st.dataframe(
+        markers_df[["id", "label", "kind", "seq", "latitude_deg", "longitude_deg", "created_at"]],
+        width="stretch",
+    )
+
+    del_id = st.selectbox(
+        "Delete marker (id)",
+        options=markers_df["id"].astype(int).tolist(),
+        key=f"mk_del_{workout_id}",
+    )
+    if st.button("Delete selected marker", key=f"mk_del_btn_{workout_id}"):
+        delete_marker(int(del_id))
+        st.success("Marker deleted. Rerun/refresh to remove it from the map.")
+
+
+def main() -> None:
+    st.set_page_config(
+        page_title="TrailOps · Training Dashboard",
+        page_icon="⛰️",
+        layout="wide",
+    )
+
+    st.title("TrailOps · Training Dashboard")
+    st.caption(
+        "Summaries, recent workouts, and interactive charts. "
+        "Detailed telemetry: running/walking/hiking workouts in the last 30 days."
+    )
+
+    # Session state
+    if "selected_workout_id" not in st.session_state:
+        st.session_state["selected_workout_id"] = None
+    if "selected_workout_detail" not in st.session_state:
+        st.session_state["selected_workout_detail"] = None
+    if "selected_workout_samples" not in st.session_state:
+        st.session_state["selected_workout_samples"] = None
+
+    # Summaries
+    summary = get_training_summary()
+    last_7 = summary["last_7"]
+    last_14 = summary["last_14"]
+    lifetime = summary["lifetime"]
+
+    m_to_mi = 1 / 1609.344
+    m_to_ft = 3.28084
+
+    def fmt(summary_dict):
+        cat = summary_dict["by_category"]
+        running = cat["running"]
+        walking = cat["walking"]
+
+        total_dist_m = summary_dict["total_distance_m"]
+        total_elev_m = summary_dict["total_elevation_m"]
+
+        return {
+            "total_distance_mi": round(total_dist_m * m_to_mi, 2),
+            "running_distance_mi": round(running["distance_m"] * m_to_mi, 2),
+            "walking_distance_mi": round(walking["distance_m"] * m_to_mi, 2),
+            "total_elevation_ft": round(total_elev_m * m_to_ft),
+            "running_elevation_ft": round(running["elevation_m"] * m_to_ft),
+            "walking_elevation_ft": round(walking["elevation_m"] * m_to_ft),
+            "duration_hr": round(summary_dict["total_duration_s"] / 3600, 2),
+            "count": summary_dict["count"],
+        }
+
+    s7 = fmt(last_7)
+    s14 = fmt(last_14)
+    slife = fmt(lifetime)
+
+    col_t1, col_t2, col_t3 = st.columns(3)
+
+    with col_t1:
+        st.markdown("### Last 7 Days")
+        st.write(
+            f"**Distance:** {s7['total_distance_mi']} mi  \n"
+            f"• Running: {s7['running_distance_mi']} mi  \n"
+            f"• Walk/Hike: {s7['walking_distance_mi']} mi"
+        )
+        st.write(f"**Elevation:** {s7['total_elevation_ft']} ft")
+        st.write(f"**Time:** {s7['duration_hr']} hr")
+        st.write(f"**Workouts:** {s7['count']}")
+
+    with col_t2:
+        st.markdown("### Last 14 Days")
+        st.write(
+            f"**Distance:** {s14['total_distance_mi']} mi  \n"
+            f"• Running: {s14['running_distance_mi']} mi  \n"
+            f"• Walk/Hike: {s14['walking_distance_mi']} mi"
+        )
+        st.write(f"**Elevation:** {s14['total_elevation_ft']} ft")
+        st.write(f"**Time:** {s14['duration_hr']} hr")
+        st.write(f"**Workouts:** {s14['count']}")
+
+    with col_t3:
+        st.markdown("### Lifetime")
+        st.write(
+            f"**Distance:** {slife['total_distance_mi']} mi  \n"
+            f"• Running: {slife['running_distance_mi']} mi  \n"
+            f"• Walk/Hike: {slife['walking_distance_mi']} mi"
+        )
+        st.write(f"**Elevation:** {slife['total_elevation_ft']} ft")
+        st.write(f"**Time:** {slife['duration_hr']} hr")
+        st.write(f"**Workouts:** {slife['count']}")
+
+    st.markdown("---")
+
+    # Recent workouts list + filters
+    st.subheader("Recent workouts (from database)")
+
+    recent_df = get_recent_workouts(limit=200)
+    if recent_df.empty:
+        st.info("No workouts found yet. Run FIT ingestion in the System / Ingestion app.")
+        return
+
+    st.markdown("**Date range**")
+    date_mode = st.radio(
+        "Preset date range",
+        [
+            "Last 7 days",
+            "Last 14 days",
+            "This week",
+            "Last week",
+            "This month",
+            "Last month",
+            "Lifetime",
+            "Custom",
+        ],
+        index=0,
+        horizontal=True,
+    )
+
+    custom_start = custom_end = None
+    if date_mode == "Custom":
+        today = datetime.date.today()
+        col_dr1, col_dr2 = st.columns(2)
+        with col_dr1:
+            custom_start = st.date_input("Start date", value=today - datetime.timedelta(days=7), key="recent_start")
+        with col_dr2:
+            custom_end = st.date_input("End date", value=today, key="recent_end")
+
+    if date_mode == "Custom":
+        start_date = custom_start
+        end_date = custom_end
+    else:
+        start_date, end_date = get_date_range(date_mode)
+
+    df_filtered = recent_df.copy()
+    if start_date is not None and end_date is not None:
+        mask = (df_filtered["start_time"].dt.date >= start_date) & (df_filtered["start_time"].dt.date <= end_date)
+        df_filtered = df_filtered[mask]
+
+    if df_filtered.empty:
+        st.info("No workouts found in the selected date range.")
+        return
+
+    sport_options = sorted(df_filtered["sport_type"].dropna().unique().tolist())
+
+    # Preserve sport filter selections across date range changes
+    prev_selected = st.session_state.get("selected_sports")
+    if prev_selected is None:
+        default_selected = sport_options
+    else:
+        default_selected = [s for s in prev_selected if s in sport_options]
+        if not default_selected:
+            default_selected = sport_options
+
+    selected_sports = st.multiselect(
+        "Filter by sport type",
+        options=sport_options,
+        default=default_selected,
+        format_func=lambda v: format_sport_label(v),
+        key="selected_sports_multiselect",
+    )
+    st.session_state["selected_sports"] = selected_sports
+
+    if selected_sports:
+        filtered_df = df_filtered[df_filtered["sport_type"].isin(selected_sports)]
+    else:
+        filtered_df = df_filtered.iloc[0:0]
+
+    if filtered_df.empty:
+        st.info("No workouts match the selected filters.")
+        return
+
+    # Totals
+    tmp = filtered_df.copy()
+    tmp["category"] = tmp["sport_type"].apply(classify_sport_for_totals)
+
+    running_df = tmp[tmp["category"] == "running"]
+    walking_df = tmp[tmp["category"] == "walking"]
+    stair_df = tmp[tmp["category"] == "stair"]
+
+    total_dist_mi = float(filtered_df["distance_mi"].sum())
+    total_elev_ft = float(filtered_df["elevation_gain_ft"].sum())
+    total_duration_hr = float(filtered_df["duration_min"].sum()) / 60.0
+    total_count = len(filtered_df)
+
+    run_dist_mi = float(running_df["distance_mi"].sum()) if not running_df.empty else 0.0
+    walk_dist_mi = float(walking_df["distance_mi"].sum()) if not walking_df.empty else 0.0
+    run_elev_ft = float(running_df["elevation_gain_ft"].sum()) if not running_df.empty else 0.0
+    walk_elev_ft = float(walking_df["elevation_gain_ft"].sum()) if not walking_df.empty else 0.0
+    stair_elev_ft = float(stair_df["elevation_gain_ft"].sum()) if not stair_df.empty else 0.0
+
+    st.markdown("#### Totals for selected date range")
+    col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+    with col_s1:
+        st.metric("Total distance (mi)", f"{total_dist_mi:.1f}")
+    with col_s2:
+        st.metric("Total elevation (ft)", f"{int(round(total_elev_ft))}")
+    with col_s3:
+        st.metric("Total time (hr)", f"{total_duration_hr:.2f}")
+    with col_s4:
+        st.metric("Workouts", total_count)
+
+    st.markdown("##### Breakdown by activity")
+    col_b1, col_b2, col_b3, col_b4, col_b5 = st.columns(5)
+    with col_b1:
+        st.metric("Run distance (mi)", f"{run_dist_mi:.1f}")
+    with col_b2:
+        st.metric("Walk/Hike distance (mi)", f"{walk_dist_mi:.1f}")
+    with col_b3:
+        st.metric("Run elevation (ft)", f"{int(round(run_elev_ft))}")
+    with col_b4:
+        st.metric("Walk/Hike elevation (ft)", f"{int(round(walk_elev_ft))}")
+    with col_b5:
+        st.metric("Stair elevation (ft)", f"{int(round(stair_elev_ft))}")
+
+    st.dataframe(filtered_df, width="stretch")
+
+    # Workout selection
+    records = filtered_df.to_dict(orient="records")
+
+    def option_label(rec: dict) -> str:
+        dt = rec["start_time"]
+        try:
+            dt_str = dt.strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            dt_str = str(dt)
+        sport_label = format_sport_label(rec["sport_type"])
+        return f"{dt_str} · {sport_label} · {rec['distance_mi']:.2f} mi"
+
+    selected_rec = st.selectbox(
+        "Select a workout for details",
+        options=records,
+        format_func=option_label,
+    )
+
+    if selected_rec:
+        new_id = int(selected_rec["id"])
+        if new_id != st.session_state["selected_workout_id"]:
+            st.session_state["selected_workout_id"] = new_id
+            detail = get_workout_detail(new_id)
+            st.session_state["selected_workout_detail"] = detail
+
+            if detail is not None:
+                samples_df = get_workout_plot_samples_if_allowed(
+                    new_id,
+                    detail["sport_type"],
+                    detail["start_time"],
+                )
+            else:
+                samples_df = pd.DataFrame()
+
+            st.session_state["selected_workout_samples"] = samples_df
+
+    detail = st.session_state["selected_workout_detail"]
+    samples_df = st.session_state["selected_workout_samples"]
+
+    if detail is None:
+        st.warning("Could not load details for this workout.")
+        return
+    st.markdown("### Workout details")
+
+    col_d1, col_d2, col_d3 = st.columns(3)
+    with col_d1:
+        st.write(f"**Date/time:** {detail['start_time']}")
+        st.write(f"**Sport:** {format_sport_label(detail['sport_type'])}")
+        st.write(f"**Distance:** {detail['distance_mi']:.2f} mi")
+        st.write(f"**Elevation gain:** {detail['elevation_ft']:.0f} ft")
+
+    with col_d2:
+        # Moving first (Strava-style)
+        st.write(f"**Moving time:** {_format_hhmmss(detail.get('moving_time_s'))}")
+        mp = detail.get("moving_pace_min_per_mile")
+        if mp is not None and pd.notna(mp) and mp > 0:
+            st.write(f"**Moving pace:** {_format_min_per_mile(float(mp))}")
+        else:
+            st.write("**Moving pace:** N/A")
+
+        st.write(f"**Stationary time:** {_format_hhmmss(detail.get('stationary_time_s'))}")
+
+    with col_d3:
+        st.write(f"**Total time:** {_format_hhmmss(detail['duration_s'])}")
+
+        if detail["pace_min_per_mile"]:
+            st.write(f"**Total pace:** {_format_min_per_mile(float(detail['pace_min_per_mile']))}")
+        else:
+            st.write("**Total pace:** n/a")
+
+        gap_val = detail.get("avg_gap_min_per_mile")
+        if detail.get("sport_type", "").lower().startswith("running") and gap_val is not None and pd.notna(gap_val):
+            st.write(f"**GAP:** {_format_min_per_mile(float(gap_val))}")
+        else:
+            st.write("**GAP:** N/A")
+
+
+    if detail.get("notes"):
+        st.markdown("**Notes:**")
+        st.write(detail["notes"])
+    # Route map
+    _render_route_map(int(detail['id']), plot_samples_df=samples_df, sport_type=detail.get('sport_type'), start_time_str=detail.get('start_time'))
+
+
+    # Charts
+    if samples_df is None or samples_df.empty:
+        st.info(
+            "No chart-ready telemetry found for this workout. "
+            "After ingestion, run the backfill script once to generate plot samples "
+            "or add plot-sample generation into ingestion."
+        )
+        return
+
+    st.markdown("#### Time-series analysis (interactive)")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        _plot_series(samples_df, "t_min", "pace_min_per_mile", "Pace", "min/mi")
+    with col2:
+        _plot_series(samples_df, "t_min", "elevation_ft", "Elevation", "ft")
+
+    col3, col4 = st.columns(2)
+    with col3:
+        if "grade_pct" in samples_df.columns and samples_df["grade_pct"].notna().any():
+            _plot_series(samples_df, "t_min", "grade_pct", "Grade", "%")
+        else:
+            st.write("Grade: N/A")
+    with col4:
+        _plot_series(samples_df, "t_min", "heart_rate_bpm", "Heart rate", "bpm")
+
+    col5, col6 = st.columns(2)
+    with col5:
+        _plot_series(samples_df, "t_min", "cadence_spm", "Cadence", "spm")
+    with col6:
+        if "power_w" in samples_df.columns and samples_df["power_w"].notna().any():
+            _plot_series(samples_df, "t_min", "power_w", "Power", "W")
+        else:
+            st.write("Power: N/A")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,677 @@
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.102:8501
+  External URL: http://86.3.144.188:8501
+
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.102:8501
+  External URL: http://86.3.144.188:8501
+
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.102:8501
+  External URL: http://86.3.144.188:8501
+
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.102:8501
+  External URL: http://86.3.144.188:8501
+
+2026-02-24 14:12:22.457 Uncaught app execution
+Traceback (most recent call last):
+  File "C:\trail_ops\.venv\Lib\site-packages\pandas\core\indexes\base.py", line 3812, in get_loc
+    return self._engine.get_loc(casted_key)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "pandas/_libs/index.pyx", line 167, in pandas._libs.index.IndexEngine.get_loc
+  File "pandas/_libs/index.pyx", line 196, in pandas._libs.index.IndexEngine.get_loc
+  File "pandas/_libs/hashtable_class_helper.pxi", line 7088, in pandas._libs.hashtable.PyObjectHashTable.get_item
+  File "pandas/_libs/hashtable_class_helper.pxi", line 7096, in pandas._libs.hashtable.PyObjectHashTable.get_item
+KeyError: 'distance_m'
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\exec_code.py", line 129, in exec_func_with_error_handling
+    result = func()
+             ^^^^^^
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 667, in code_to_exec
+    _mpa_v1(self._main_script_path)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 165, in _mpa_v1
+    page.run()
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\navigation\page.py", line 303, in run
+    exec(code, module.__dict__)  # noqa: S102
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\trail_ops\app\main_app.py", line 64, in <module>
+    main()
+  File "C:\trail_ops\app\main_app.py", line 60, in main
+    render_app_shell(body_renderer=_route)
+  File "C:\trail_ops\app\ui\shell.py", line 128, in render_app_shell
+    body_renderer()
+  File "C:\trail_ops\app\main_app.py", line 42, in _route
+    renderer()
+  File "C:\trail_ops\app\pages\dashboard.py", line 7, in render_dashboard_page
+    render_training_dashboard(shell_mode=True)
+  File "C:\trail_ops\app\training_dashboard.py", line 1518, in render_training_dashboard
+    _render_training_dashboard_shell()
+  File "C:\trail_ops\app\training_dashboard.py", line 1561, in _render_training_dashboard_shell
+    total_dist_m = float(recent_df["distance_m"].fillna(0).sum())
+                         ~~~~~~~~~^^^^^^^^^^^^^^
+  File "C:\trail_ops\.venv\Lib\site-packages\pandas\core\frame.py", line 4113, in __getitem__
+    indexer = self.columns.get_loc(key)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\trail_ops\.venv\Lib\site-packages\pandas\core\indexes\base.py", line 3819, in get_loc
+    raise KeyError(key) from err
+KeyError: 'distance_m'
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.102:8501
+  External URL: http://86.3.144.188:8501
+
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.102:8501
+  External URL: http://86.3.144.188:8501
+
+2026-02-24 14:21:48.273 `label` got an empty value. This is discouraged for accessibility reasons and may be disallowed in the future by raising an exception. Please provide a non-empty label and hide it with label_visibility if needed.
+Stack (most recent call last):
+  File "C:\Users\calum\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1002, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\calum\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045, in _bootstrap_inner
+    self.run()
+  File "C:\Users\calum\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 982, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 378, in _run_script_thread
+    self._run_script(request.rerun_data)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 685, in _run_script
+    ) = exec_func_with_error_handling(code_to_exec, ctx)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\exec_code.py", line 129, in exec_func_with_error_handling
+    result = func()
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 667, in code_to_exec
+    _mpa_v1(self._main_script_path)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 165, in _mpa_v1
+    page.run()
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\navigation\page.py", line 303, in run
+    exec(code, module.__dict__)  # noqa: S102
+  File "C:\trail_ops\app\main_app.py", line 64, in <module>
+    main()
+  File "C:\trail_ops\app\main_app.py", line 60, in main
+    render_app_shell(body_renderer=_route)
+  File "C:\trail_ops\app\ui\shell.py", line 128, in render_app_shell
+    body_renderer()
+  File "C:\trail_ops\app\main_app.py", line 42, in _route
+    renderer()
+  File "C:\trail_ops\app\pages\dashboard.py", line 16, in render_dashboard_page
+    render_training_dashboard(shell_mode=True)
+  File "C:\trail_ops\app\training_dashboard.py", line 1518, in render_training_dashboard
+    _render_training_dashboard_shell()
+  File "C:\trail_ops\app\training_dashboard.py", line 1586, in _render_training_dashboard_shell
+    st.metric("", f"{total_dist_mi:.1f} mi")
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\metrics_util.py", line 447, in wrapped_func
+    result = non_optional_func(*args, **kwargs)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\elements\metric.py", line 268, in metric
+    maybe_raise_label_warnings(label, label_visibility)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\elements\lib\policies.py", line 184, in maybe_raise_label_warnings
+    _LOGGER.warning(
+2026-02-24 14:21:48.274 `label` got an empty value. This is discouraged for accessibility reasons and may be disallowed in the future by raising an exception. Please provide a non-empty label and hide it with label_visibility if needed.
+Stack (most recent call last):
+  File "C:\Users\calum\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1002, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\calum\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045, in _bootstrap_inner
+    self.run()
+  File "C:\Users\calum\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 982, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 378, in _run_script_thread
+    self._run_script(request.rerun_data)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 685, in _run_script
+    ) = exec_func_with_error_handling(code_to_exec, ctx)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\exec_code.py", line 129, in exec_func_with_error_handling
+    result = func()
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 667, in code_to_exec
+    _mpa_v1(self._main_script_path)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 165, in _mpa_v1
+    page.run()
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\navigation\page.py", line 303, in run
+    exec(code, module.__dict__)  # noqa: S102
+  File "C:\trail_ops\app\main_app.py", line 64, in <module>
+    main()
+  File "C:\trail_ops\app\main_app.py", line 60, in main
+    render_app_shell(body_renderer=_route)
+  File "C:\trail_ops\app\ui\shell.py", line 128, in render_app_shell
+    body_renderer()
+  File "C:\trail_ops\app\main_app.py", line 42, in _route
+    renderer()
+  File "C:\trail_ops\app\pages\dashboard.py", line 16, in render_dashboard_page
+    render_training_dashboard(shell_mode=True)
+  File "C:\trail_ops\app\training_dashboard.py", line 1518, in render_training_dashboard
+    _render_training_dashboard_shell()
+  File "C:\trail_ops\app\training_dashboard.py", line 1590, in _render_training_dashboard_shell
+    st.metric("", f"{total_elev_ft:,.0f} ft")
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\metrics_util.py", line 447, in wrapped_func
+    result = non_optional_func(*args, **kwargs)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\elements\metric.py", line 268, in metric
+    maybe_raise_label_warnings(label, label_visibility)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\elements\lib\policies.py", line 184, in maybe_raise_label_warnings
+    _LOGGER.warning(
+2026-02-24 14:21:48.276 `label` got an empty value. This is discouraged for accessibility reasons and may be disallowed in the future by raising an exception. Please provide a non-empty label and hide it with label_visibility if needed.
+Stack (most recent call last):
+  File "C:\Users\calum\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1002, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\calum\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045, in _bootstrap_inner
+    self.run()
+  File "C:\Users\calum\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 982, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 378, in _run_script_thread
+    self._run_script(request.rerun_data)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 685, in _run_script
+    ) = exec_func_with_error_handling(code_to_exec, ctx)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\exec_code.py", line 129, in exec_func_with_error_handling
+    result = func()
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 667, in code_to_exec
+    _mpa_v1(self._main_script_path)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 165, in _mpa_v1
+    page.run()
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\navigation\page.py", line 303, in run
+    exec(code, module.__dict__)  # noqa: S102
+  File "C:\trail_ops\app\main_app.py", line 64, in <module>
+    main()
+  File "C:\trail_ops\app\main_app.py", line 60, in main
+    render_app_shell(body_renderer=_route)
+  File "C:\trail_ops\app\ui\shell.py", line 128, in render_app_shell
+    body_renderer()
+  File "C:\trail_ops\app\main_app.py", line 42, in _route
+    renderer()
+  File "C:\trail_ops\app\pages\dashboard.py", line 16, in render_dashboard_page
+    render_training_dashboard(shell_mode=True)
+  File "C:\trail_ops\app\training_dashboard.py", line 1518, in render_training_dashboard
+    _render_training_dashboard_shell()
+  File "C:\trail_ops\app\training_dashboard.py", line 1594, in _render_training_dashboard_shell
+    st.metric("", f"{time_hr:.1f} hr")
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\metrics_util.py", line 447, in wrapped_func
+    result = non_optional_func(*args, **kwargs)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\elements\metric.py", line 268, in metric
+    maybe_raise_label_warnings(label, label_visibility)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\elements\lib\policies.py", line 184, in maybe_raise_label_warnings
+    _LOGGER.warning(
+2026-02-24 14:21:48.276 `label` got an empty value. This is discouraged for accessibility reasons and may be disallowed in the future by raising an exception. Please provide a non-empty label and hide it with label_visibility if needed.
+Stack (most recent call last):
+  File "C:\Users\calum\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1002, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\calum\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045, in _bootstrap_inner
+    self.run()
+  File "C:\Users\calum\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 982, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 378, in _run_script_thread
+    self._run_script(request.rerun_data)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 685, in _run_script
+    ) = exec_func_with_error_handling(code_to_exec, ctx)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\exec_code.py", line 129, in exec_func_with_error_handling
+    result = func()
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 667, in code_to_exec
+    _mpa_v1(self._main_script_path)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 165, in _mpa_v1
+    page.run()
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\navigation\page.py", line 303, in run
+    exec(code, module.__dict__)  # noqa: S102
+  File "C:\trail_ops\app\main_app.py", line 64, in <module>
+    main()
+  File "C:\trail_ops\app\main_app.py", line 60, in main
+    render_app_shell(body_renderer=_route)
+  File "C:\trail_ops\app\ui\shell.py", line 128, in render_app_shell
+    body_renderer()
+  File "C:\trail_ops\app\main_app.py", line 42, in _route
+    renderer()
+  File "C:\trail_ops\app\pages\dashboard.py", line 16, in render_dashboard_page
+    render_training_dashboard(shell_mode=True)
+  File "C:\trail_ops\app\training_dashboard.py", line 1518, in render_training_dashboard
+    _render_training_dashboard_shell()
+  File "C:\trail_ops\app\training_dashboard.py", line 1598, in _render_training_dashboard_shell
+    st.metric("", f"{count}")
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\metrics_util.py", line 447, in wrapped_func
+    result = non_optional_func(*args, **kwargs)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\elements\metric.py", line 268, in metric
+    maybe_raise_label_warnings(label, label_visibility)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\elements\lib\policies.py", line 184, in maybe_raise_label_warnings
+    _LOGGER.warning(
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.102:8501
+  External URL: http://86.3.144.188:8501
+
+2026-02-24 14:30:39.189 Uncaught app execution
+Traceback (most recent call last):
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\exec_code.py", line 129, in exec_func_with_error_handling
+    result = func()
+             ^^^^^^
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 667, in code_to_exec
+    _mpa_v1(self._main_script_path)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 165, in _mpa_v1
+    page.run()
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\navigation\page.py", line 303, in run
+    exec(code, module.__dict__)  # noqa: S102
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\trail_ops\app\main_app.py", line 26, in <module>
+    from app.pages.dashboard import render_dashboard_page
+  File "C:\trail_ops\app\pages\dashboard.py", line 5, in <module>
+    from app.training_dashboard import render_training_dashboard
+  File "C:\trail_ops\app\training_dashboard.py", line 1624
+    selected_rec = st.selectbox(
+IndentationError: unexpected indent
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.102:8501
+  External URL: http://86.3.144.188:8501
+
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.102:8501
+  External URL: http://86.3.144.188:8501
+
+2026-02-24 14:50:29.381 `label` got an empty value. This is discouraged for accessibility reasons and may be disallowed in the future by raising an exception. Please provide a non-empty label and hide it with label_visibility if needed.
+Stack (most recent call last):
+  File "C:\Users\calum\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1002, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\calum\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045, in _bootstrap_inner
+    self.run()
+  File "C:\Users\calum\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 982, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 378, in _run_script_thread
+    self._run_script(request.rerun_data)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 685, in _run_script
+    ) = exec_func_with_error_handling(code_to_exec, ctx)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\exec_code.py", line 129, in exec_func_with_error_handling
+    result = func()
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 667, in code_to_exec
+    _mpa_v1(self._main_script_path)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 165, in _mpa_v1
+    page.run()
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\navigation\page.py", line 303, in run
+    exec(code, module.__dict__)  # noqa: S102
+  File "C:\trail_ops\app\main_app.py", line 64, in <module>
+    main()
+  File "C:\trail_ops\app\main_app.py", line 60, in main
+    render_app_shell(body_renderer=_route)
+  File "C:\trail_ops\app\ui\shell.py", line 128, in render_app_shell
+    body_renderer()
+  File "C:\trail_ops\app\main_app.py", line 42, in _route
+    renderer()
+  File "C:\trail_ops\app\pages\dashboard.py", line 12, in render_dashboard_page
+    render_dashboard_shell()
+  File "C:\trail_ops\app\pages\dashboard_shell.py", line 141, in render_dashboard_shell
+    _metric_panel("Distance", f"{total_dist_mi:.1f} mi")
+  File "C:\trail_ops\app\pages\dashboard_shell.py", line 96, in _metric_panel
+    st.metric("", value)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\metrics_util.py", line 447, in wrapped_func
+    result = non_optional_func(*args, **kwargs)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\elements\metric.py", line 268, in metric
+    maybe_raise_label_warnings(label, label_visibility)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\elements\lib\policies.py", line 184, in maybe_raise_label_warnings
+    _LOGGER.warning(
+2026-02-24 14:50:29.383 `label` got an empty value. This is discouraged for accessibility reasons and may be disallowed in the future by raising an exception. Please provide a non-empty label and hide it with label_visibility if needed.
+Stack (most recent call last):
+  File "C:\Users\calum\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1002, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\calum\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045, in _bootstrap_inner
+    self.run()
+  File "C:\Users\calum\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 982, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 378, in _run_script_thread
+    self._run_script(request.rerun_data)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 685, in _run_script
+    ) = exec_func_with_error_handling(code_to_exec, ctx)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\exec_code.py", line 129, in exec_func_with_error_handling
+    result = func()
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 667, in code_to_exec
+    _mpa_v1(self._main_script_path)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 165, in _mpa_v1
+    page.run()
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\navigation\page.py", line 303, in run
+    exec(code, module.__dict__)  # noqa: S102
+  File "C:\trail_ops\app\main_app.py", line 64, in <module>
+    main()
+  File "C:\trail_ops\app\main_app.py", line 60, in main
+    render_app_shell(body_renderer=_route)
+  File "C:\trail_ops\app\ui\shell.py", line 128, in render_app_shell
+    body_renderer()
+  File "C:\trail_ops\app\main_app.py", line 42, in _route
+    renderer()
+  File "C:\trail_ops\app\pages\dashboard.py", line 12, in render_dashboard_page
+    render_dashboard_shell()
+  File "C:\trail_ops\app\pages\dashboard_shell.py", line 143, in render_dashboard_shell
+    _metric_panel("Elevation", f"{total_elev_ft:,.0f} ft")
+  File "C:\trail_ops\app\pages\dashboard_shell.py", line 96, in _metric_panel
+    st.metric("", value)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\metrics_util.py", line 447, in wrapped_func
+    result = non_optional_func(*args, **kwargs)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\elements\metric.py", line 268, in metric
+    maybe_raise_label_warnings(label, label_visibility)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\elements\lib\policies.py", line 184, in maybe_raise_label_warnings
+    _LOGGER.warning(
+2026-02-24 14:50:29.384 `label` got an empty value. This is discouraged for accessibility reasons and may be disallowed in the future by raising an exception. Please provide a non-empty label and hide it with label_visibility if needed.
+Stack (most recent call last):
+  File "C:\Users\calum\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1002, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\calum\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045, in _bootstrap_inner
+    self.run()
+  File "C:\Users\calum\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 982, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 378, in _run_script_thread
+    self._run_script(request.rerun_data)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 685, in _run_script
+    ) = exec_func_with_error_handling(code_to_exec, ctx)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\exec_code.py", line 129, in exec_func_with_error_handling
+    result = func()
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 667, in code_to_exec
+    _mpa_v1(self._main_script_path)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 165, in _mpa_v1
+    page.run()
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\navigation\page.py", line 303, in run
+    exec(code, module.__dict__)  # noqa: S102
+  File "C:\trail_ops\app\main_app.py", line 64, in <module>
+    main()
+  File "C:\trail_ops\app\main_app.py", line 60, in main
+    render_app_shell(body_renderer=_route)
+  File "C:\trail_ops\app\ui\shell.py", line 128, in render_app_shell
+    body_renderer()
+  File "C:\trail_ops\app\main_app.py", line 42, in _route
+    renderer()
+  File "C:\trail_ops\app\pages\dashboard.py", line 12, in render_dashboard_page
+    render_dashboard_shell()
+  File "C:\trail_ops\app\pages\dashboard_shell.py", line 145, in render_dashboard_shell
+    _metric_panel("Time", f"{total_time_hr:.1f} hr")
+  File "C:\trail_ops\app\pages\dashboard_shell.py", line 96, in _metric_panel
+    st.metric("", value)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\metrics_util.py", line 447, in wrapped_func
+    result = non_optional_func(*args, **kwargs)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\elements\metric.py", line 268, in metric
+    maybe_raise_label_warnings(label, label_visibility)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\elements\lib\policies.py", line 184, in maybe_raise_label_warnings
+    _LOGGER.warning(
+2026-02-24 14:50:29.387 `label` got an empty value. This is discouraged for accessibility reasons and may be disallowed in the future by raising an exception. Please provide a non-empty label and hide it with label_visibility if needed.
+Stack (most recent call last):
+  File "C:\Users\calum\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1002, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\calum\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045, in _bootstrap_inner
+    self.run()
+  File "C:\Users\calum\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 982, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 378, in _run_script_thread
+    self._run_script(request.rerun_data)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 685, in _run_script
+    ) = exec_func_with_error_handling(code_to_exec, ctx)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\exec_code.py", line 129, in exec_func_with_error_handling
+    result = func()
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 667, in code_to_exec
+    _mpa_v1(self._main_script_path)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 165, in _mpa_v1
+    page.run()
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\navigation\page.py", line 303, in run
+    exec(code, module.__dict__)  # noqa: S102
+  File "C:\trail_ops\app\main_app.py", line 64, in <module>
+    main()
+  File "C:\trail_ops\app\main_app.py", line 60, in main
+    render_app_shell(body_renderer=_route)
+  File "C:\trail_ops\app\ui\shell.py", line 128, in render_app_shell
+    body_renderer()
+  File "C:\trail_ops\app\main_app.py", line 42, in _route
+    renderer()
+  File "C:\trail_ops\app\pages\dashboard.py", line 12, in render_dashboard_page
+    render_dashboard_shell()
+  File "C:\trail_ops\app\pages\dashboard_shell.py", line 147, in render_dashboard_shell
+    _metric_panel("Workouts", f"{total_count}")
+  File "C:\trail_ops\app\pages\dashboard_shell.py", line 96, in _metric_panel
+    st.metric("", value)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\runtime\metrics_util.py", line 447, in wrapped_func
+    result = non_optional_func(*args, **kwargs)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\elements\metric.py", line 268, in metric
+    maybe_raise_label_warnings(label, label_visibility)
+  File "C:\trail_ops\.venv\Lib\site-packages\streamlit\elements\lib\policies.py", line 184, in maybe_raise_label_warnings
+    _LOGGER.warning(
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.102:8501
+  External URL: http://86.3.144.188:8501
+
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.102:8501
+  External URL: http://86.3.144.188:8501
+
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.102:8501
+  External URL: http://86.3.144.188:8501
+
+2026-02-25 09:33:26.825 Port 8501 is already in use
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.102:8501
+  External URL: http://173.239.211.35:8501
+
+2026-02-25 13:47:57.007 Port 8501 is already in use
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.102:8501
+  External URL: http://86.3.144.188:8501
+
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.102:8501
+  External URL: http://86.3.144.188:8501
+
+2026-02-25 15:09:03.435 Port 8501 is already in use
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.102:8501
+  External URL: http://45.130.83.227:8501
+
+2026-02-25 16:09:20.586 Port 8501 is already in use
+2026-02-25 16:21:38.461 Port 8501 is already in use
+2026-02-25 16:29:33.247 Port 8501 is already in use
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.102:8501
+  External URL: http://173.239.211.26:8501
+
+2026-02-25 20:05:07.877 Port 8501 is already in use
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.106:8501
+  External URL: http://86.3.144.188:8501
+
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.106:8501
+  External URL: http://45.8.19.109:8501
+
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.106:8501
+  External URL: http://216.73.160.159:8501
+
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.106:8501
+  External URL: http://216.73.160.172:8501
+
+2026-02-26 14:13:48.960 Port 8501 is already in use
+2026-02-26 14:28:41.422 Port 8501 is already in use
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.106:8501
+  External URL: http://45.8.19.109:8501
+
+2026-02-26 14:55:24.565 Port 8501 is already in use
+2026-02-26 14:55:46.494 Port 8501 is already in use
+2026-02-26 15:03:44.175 Port 8501 is already in use
+2026-02-26 15:19:59.814 Port 8501 is already in use
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.106:8501
+  External URL: http://216.73.160.7:8501
+
+2026-02-26 15:58:21.821 Port 8501 is already in use
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.106:8501
+  External URL: http://216.73.160.155:8501
+
+2026-02-26 17:40:21.471 Port 8501 is already in use
+2026-02-26 20:00:12.346 Port 8501 is already in use
+2026-02-26 20:07:28.313 Port 8501 is already in use
+2026-02-27 09:04:40.303 Port 8501 is already in use
+2026-02-27 09:10:42.413 Port 8501 is already in use
+2026-02-27 09:25:26.096 Port 8501 is already in use
+2026-02-27 09:44:59.540 Port 8501 is already in use
+2026-02-27 10:14:31.034 Port 8501 is already in use
+2026-02-27 10:18:01.948 Port 8501 is already in use
+2026-02-27 10:30:22.506 Port 8501 is already in use
+2026-02-27 10:51:29.558 Port 8501 is already in use
+2026-02-27 11:03:39.456 Port 8501 is already in use
+2026-02-27 11:05:48.300 Port 8501 is already in use
+2026-02-27 11:17:49.397 Port 8501 is already in use
+2026-02-27 13:06:11.728 Port 8501 is already in use
+2026-02-27 14:21:13.663 Port 8501 is already in use
+2026-02-27 14:32:26.973 Port 8501 is already in use
+2026-02-27 15:24:05.510 Port 8501 is already in use
+2026-02-27 17:45:09.270 Port 8501 is already in use
+2026-02-27 20:17:42.723 Port 8501 is already in use
+2026-02-27 20:27:50.481 Port 8501 is already in use
+2026-02-27 22:08:58.036 Port 8501 is already in use
+2026-02-27 22:09:05.560 Port 8501 is already in use
+2026-02-28 16:33:04.931 Port 8501 is already in use
+2026-02-28 18:13:44.606 Port 8501 is already in use
+2026-02-28 22:58:32.138 Port 8501 is already in use
+2026-03-01 19:31:55.770 Port 8501 is already in use
+2026-03-01 19:40:30.373 Port 8501 is already in use
+2026-03-01 19:51:54.116 Port 8501 is already in use
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.106:8501
+  External URL: http://216.73.160.4:8501
+
+2026-03-02 09:04:32.523 Port 8501 is already in use
+2026-03-02 09:16:48.766 Port 8501 is already in use
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.106:8501
+  External URL: http://216.73.160.171:8501
+
+2026-03-02 09:38:18.782 Port 8501 is already in use
+2026-03-02 11:50:30.486 Port 8501 is already in use
+2026-03-02 13:30:14.777 Port 8501 is already in use
+2026-03-02 15:56:31.960 Port 8501 is already in use
+2026-03-03 10:01:41.312 Port 8501 is already in use
+2026-03-03 11:34:13.475 Port 8501 is already in use
+2026-03-03 11:44:24.247 Port 8501 is already in use
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.106:8501
+  External URL: http://216.73.161.164:8501
+
+2026-03-03 13:10:51.424 Port 8501 is already in use
+2026-03-03 20:09:10.817 Port 8501 is already in use
+2026-03-04 09:20:54.095 Port 8501 is already in use
+2026-03-04 10:06:13.798 Port 8501 is already in use
+2026-03-04 10:06:53.890 Port 8501 is already in use
+2026-03-04 11:34:40.004 Port 8501 is already in use
+2026-03-04 11:39:59.298 Port 8501 is already in use
+2026-03-04 11:54:45.532 Port 8501 is already in use
+2026-03-04 12:27:51.753 Port 8501 is already in use
+2026-03-04 13:21:39.901 Port 8501 is already in use
+2026-03-04 13:34:28.793 Port 8501 is already in use
+2026-03-04 14:05:56.868 Port 8501 is already in use
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.106:8501
+  External URL: http://86.3.144.188:8501
+
+2026-03-04 14:29:02.219 Port 8501 is already in use
+2026-03-04 14:37:15.221 Port 8501 is already in use
+2026-03-04 14:45:40.852 Port 8501 is already in use
+2026-03-04 14:52:05.358 Port 8501 is already in use
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.106:8501
+  External URL: http://86.3.144.188:8501
+
+2026-03-04 18:19:09.435 Port 8501 is already in use
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.106:8501
+  External URL: http://86.3.144.188:8501
+
+2026-03-04 19:56:02.777 Port 8501 is already in use
+2026-03-04 20:02:04.820 Port 8501 is already in use
+2026-03-05 08:47:39.508 Port 8501 is already in use
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.106:8501
+  External URL: http://86.3.144.188:8501
+
+2026-03-05 08:56:53.750 Port 8501 is already in use
+2026-03-05 09:10:19.138 Port 8501 is already in use
+2026-03-05 09:15:24.970 Port 8501 is already in use
+2026-03-05 09:25:08.544 Port 8501 is already in use

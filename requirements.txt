@@ -3,3 +3,5 @@ python-dotenv
 pandas
 fitparse
 gpxpy
+fastapi
+uvicorn[standard]

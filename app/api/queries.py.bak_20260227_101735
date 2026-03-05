@@ -1,0 +1,664 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, date, timedelta
+from typing import Any, Optional
+
+import sqlite3
+
+from app.db.database import get_connection
+
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (name,),
+    ).fetchone()
+    return row is not None
+
+
+def _cols(conn: sqlite3.Connection, table: str) -> set[str]:
+    if not _table_exists(conn, table):
+        return set()
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return {r[1] for r in rows}
+
+
+def _parse_ymd(s: Optional[str]) -> Optional[date]:
+    if not s:
+        return None
+    s = s.strip()
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+
+def _sport_like(sport: Optional[str]) -> Optional[str]:
+    if not sport:
+        return None
+    s = sport.strip().lower()
+    if s in ("all", ""):
+        return None
+    # Common UI shorthands
+    if s == "run":
+        return "running:%"
+    if s == "walk":
+        return "walking:%"
+    if s == "hike":
+        return "hiking:%"
+    # Allow callers to pass a full prefix like "running:%" or "cycling:%"
+    if ":" in s:
+        return s if s.endswith("%") else (s + "%")
+    return f"{s}:%"
+
+
+def _row_to_dict(row: Any) -> dict:
+    # RowProxy from app.db.database behaves like dict already; sqlite3.Row is mapping-like.
+    if row is None:
+        return {}
+    if isinstance(row, dict):
+        return dict(row)
+    try:
+        return {k: row[k] for k in row.keys()}
+    except Exception:
+        # fallback: tuple rows (no keys)
+        return {"_": list(row)}
+
+
+def get_workouts_range(
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    sport: Optional[str] = "all",
+    limit: int = 300,
+) -> dict:
+    """Return workouts for a date range.
+
+    Args:
+        start/end: 'YYYY-MM-DD' inclusive bounds. If omitted, defaults to last 7 days.
+        sport: 'all' or shorthand (run/walk/hike) or full prefix like 'running:%'.
+        limit: max rows (hard limit enforced upstream too).
+    """
+    start_d = _parse_ymd(start)
+    end_d = _parse_ymd(end)
+
+    if start_d is None and end_d is None:
+        end_d = date.today()
+        start_d = end_d - timedelta(days=6)
+    elif start_d is None and end_d is not None:
+        start_d = end_d - timedelta(days=6)
+    elif start_d is not None and end_d is None:
+        end_d = start_d + timedelta(days=6)
+
+    # Build ISO timestamps at day boundaries (DB stores ISO strings)
+    start_ts = datetime.combine(start_d, datetime.min.time()).strftime("%Y-%m-%dT%H:%M:%S")
+    end_excl = datetime.combine(end_d + timedelta(days=1), datetime.min.time()).strftime("%Y-%m-%dT%H:%M:%S")
+
+    sport_like = _sport_like(sport)
+
+    conn = get_connection(row_factory="sqlite_row")
+    try:
+        where = "w.start_time >= ? AND w.start_time < ?"
+        params: list[Any] = [start_ts, end_excl]
+
+        if sport_like:
+            where += " AND w.sport_type LIKE ?"
+            params.append(sport_like)
+
+        sql = f"""
+            SELECT
+                w.id,
+                w.start_time,
+                w.sport_type,
+                w.distance_m,
+                w.duration_s,
+                w.moving_time_s,
+                w.elevation_gain_m,
+                w.avg_heart_rate,
+                w.max_heart_rate,
+                w.avg_gap_min_per_mile
+            FROM workouts w
+            WHERE {where}
+            ORDER BY w.start_time DESC
+            LIMIT ?
+        """
+        params.append(int(limit))
+        rows = conn.execute(sql, params).fetchall()
+        items = [_row_to_dict(r) for r in rows]
+        return {
+            "start": start_d.isoformat(),
+            "end": end_d.isoformat(),
+            "sport": (sport or "all"),
+            "count": len(items),
+            "items": items,
+        }
+    finally:
+        conn.close()
+
+
+def get_workout_by_id(workout_id: int) -> dict:
+    """Return a single workout with lightweight joined enrichment fields if available."""
+    conn = get_connection(row_factory="sqlite_row")
+    try:
+        # Base workout
+        w = conn.execute(
+            """
+            SELECT
+                id, start_time, sport_type,
+                distance_m, duration_s, moving_time_s,
+                elevation_gain_m, avg_heart_rate, max_heart_rate,
+                avg_gap_min_per_mile
+            FROM workouts
+            WHERE id = ?
+            """,
+            (int(workout_id),),
+        ).fetchone()
+        if not w:
+            return {"detail": "not_found", "workout_id": int(workout_id)}
+
+        out = _row_to_dict(w)
+
+        # Optional enrichment: route context
+        if _table_exists(conn, "workout_route_context"):
+            cols = _cols(conn, "workout_route_context")
+            # Prefer newer columns if present
+            preferred = None
+            for c in ("start_location_label", "location_label", "center_location_label"):
+                if c in cols:
+                    preferred = c
+                    break
+            if preferred:
+                rc = conn.execute(
+                    f"SELECT {preferred} AS location_label FROM workout_route_context WHERE workout_id = ?",
+                    (int(workout_id),),
+                ).fetchone()
+                if rc and rc["location_label"]:
+                    out["location_label"] = rc["location_label"]
+
+        # Optional enrichment: surface summary (derive from stats columns)
+        if _table_exists(conn, "workout_surface_stats"):
+            ss = conn.execute(
+                """
+                SELECT road_m, paved_path_m, trail_m, track_m, grass_m, rock_m, forest_m, unknown_m
+                FROM workout_surface_stats
+                WHERE workout_id = ?
+                """,
+                (int(workout_id),),
+            ).fetchone()
+            if ss:
+                d = _row_to_dict(ss)
+                # Create a simple human summary (top 3 surfaces)
+                pairs = [(k.replace("_m","").replace("paved_path","paved path"), float(v or 0.0)) for k, v in d.items() if k.endswith("_m")]
+                pairs = [(k, v) for k, v in pairs if v > 0]
+                pairs.sort(key=lambda x: x[1], reverse=True)
+                total = sum(v for _, v in pairs) or 0.0
+                if total > 0 and pairs:
+                    top = []
+                    for k, v in pairs[:4]:
+                        pct = (v / total) * 100.0
+                        top.append(f"{k} {pct:.0f}%")
+                    out["surface_summary"] = ", ".join(top)
+
+        # Optional enrichment: weather summary (if table exists and has a usable text column)
+        if _table_exists(conn, "workout_weather"):
+            cols = _cols(conn, "workout_weather")
+            text_col = None
+            for c in ("summary", "weather_summary", "raw_json"):
+                if c in cols:
+                    text_col = c
+                    break
+            if text_col:
+                ww = conn.execute(
+                    f"SELECT {text_col} AS weather_summary FROM workout_weather WHERE workout_id = ?",
+                    (int(workout_id),),
+                ).fetchone()
+                if ww and ww["weather_summary"]:
+                    out["weather_summary"] = ww["weather_summary"]
+
+        # Optional enrichment: peaks summary (count hits)
+        if _table_exists(conn, "workout_peak_hits"):
+            ph = conn.execute(
+                "SELECT COUNT(*) AS peak_count FROM workout_peak_hits WHERE workout_id = ?",
+                (int(workout_id),),
+            ).fetchone()
+            if ph:
+                out["peaks_count"] = int(ph["peak_count"] or 0)
+
+        return out
+    finally:
+        conn.close()
+
+
+def get_plot_samples(workout_id: int, max_points: int = 1000) -> dict:
+    """Return plot samples for a workout (for charts).
+
+    This endpoint is defensive: it returns whatever columns exist in workout_plot_samples.
+    """
+    conn = get_connection(row_factory="sqlite_row")
+    try:
+        if not _table_exists(conn, "workout_plot_samples"):
+            return {"workout_id": int(workout_id), "count": 0, "items": []}
+
+        cols = _cols(conn, "workout_plot_samples")
+        # Pick a stable ordering column if present
+        order_col = None
+        for c in ("t_s", "t_sec", "t", "sample_index", "idx"):
+            if c in cols:
+                order_col = c
+                break
+
+        # Select a common subset if available; otherwise select *
+        preferred = [c for c in (
+            "t_s",
+            "t_min",
+            "pace_min_per_mile",
+            "elevation_ft",
+            "grade_pct",
+            "heart_rate_bpm",
+            "cadence_spm",
+            "power_w",
+            "lat",
+            "lon",
+        ) if c in cols]
+
+        select_cols = ", ".join(preferred) if preferred else "*"
+        sql = f"SELECT {select_cols} FROM workout_plot_samples WHERE workout_id = ?"
+        if order_col:
+            sql += f" ORDER BY {order_col} ASC"
+        sql += " LIMIT ?"
+
+        rows = conn.execute(sql, (int(workout_id), int(max_points))).fetchall()
+        items = [_row_to_dict(r) for r in rows]
+        return {"workout_id": int(workout_id), "count": len(items), "items": items, "columns": list(items[0].keys()) if items else preferred}
+    finally:
+        conn.close()
+
+
+def _choose_spark_metric(sport_type: str | None, elevation_gain_m: float | None) -> str:
+    st = (sport_type or "").lower()
+    elev_ft = (float(elevation_gain_m or 0.0) * 3.28084)
+
+    # Running (outdoor): elevation if big vert, otherwise pace.
+    if st == "running:generic":
+        return "elevation" if elev_ft > 800 else "pace"
+    if st == "running:indoor_running":
+        return "hr"
+
+    # Walking / hiking.
+    if st == "walking:generic":
+        return "elevation"
+    if st == "walking:indoor_walking":
+        return "hr"
+    if "hiking" in st:
+        return "elevation"
+
+    # Cycling.
+    if st.startswith("cycling:"):
+        return "power"
+
+    # Strength / HIIT / Stair climber.
+    if st == "training:strength_training":
+        return "hr"
+    if st == "fitness_equipment:stair_climbing":
+        return "hr"
+    if st == "62:70":
+        return "hr"
+
+    # Default.
+    return "hr"
+
+
+def _downsample_points(points: list[list[float]], max_points: int) -> list[list[float]]:
+    if max_points <= 0 or len(points) <= max_points:
+        return points
+    if max_points == 1:
+        return [points[0]]
+
+    n = len(points)
+    out: list[list[float]] = []
+    last_i = -1
+    for j in range(max_points):
+        i = round(j * (n - 1) / (max_points - 1))
+        if i == last_i:
+            continue
+        out.append(points[i])
+        last_i = i
+    return out
+
+
+def get_sparklines_batch(
+    workout_ids: list[int],
+    max_points: int = 60,
+    metric_mode: str = "auto",
+) -> dict:
+    """Return downsampled per-workout sparkline series.
+
+    Response shape:
+    {
+      "count": <n>,
+      "sparklines": {
+        "<workout_id>": { "metric": "hr|pace|elevation|power|gap", "points": [[t_min, value], ...] }
+      }
+    }
+    """
+    ids = [int(x) for x in (workout_ids or []) if str(x).strip().isdigit()]
+    ids = ids[:500]  # hard cap
+
+    if not ids:
+        return {"count": 0, "sparklines": {}}
+
+    conn = get_connection(row_factory="sqlite_row")
+    try:
+        # Pull minimal workout context for metric selection.
+        q_marks = ",".join(["?"] * len(ids))
+        w_sql = f"""
+            SELECT id, sport_type, elevation_gain_m
+            FROM workouts
+            WHERE id IN ({q_marks})
+        """
+        w_rows = conn.execute(w_sql, ids).fetchall()
+        workout_meta = {int(r["id"]): _row_to_dict(r) for r in w_rows}
+
+        # Map metric -> plot_samples column
+        metric_col = {
+            "hr": "heart_rate_bpm",
+            "pace": "pace_min_per_mile",
+            "gap": "gap_min_per_mile",
+            "elevation": "elevation_ft",
+            "power": "power_w",
+            "grade": "grade_pct",
+            "cad": "cadence_spm",
+            "pwr": "power_w",
+        }
+
+        out: dict[str, dict] = {}
+
+        for wid in ids:
+            meta = workout_meta.get(int(wid), {})
+            chosen = "hr"
+            if (metric_mode or "auto").lower() == "auto":
+                chosen = _choose_spark_metric(meta.get("sport_type"), meta.get("elevation_gain_m"))
+            else:
+                chosen = str(metric_mode).lower()
+
+            col = metric_col.get(chosen, metric_col["hr"])
+
+            sql = f"""
+                SELECT t_min, {col} AS v
+                FROM workout_plot_samples
+                WHERE workout_id = ?
+                  AND v IS NOT NULL
+                ORDER BY t_min ASC
+            """
+
+            rows = conn.execute(sql, (int(wid),)).fetchall()
+            pts: list[list[float]] = []
+            for r in rows:
+                try:
+                    t = float(r["t_min"])
+                    v = float(r["v"])
+                except Exception:
+                    continue
+                pts.append([t, v])
+
+            pts = _downsample_points(pts, int(max_points))
+            out[str(int(wid))] = {"metric": chosen, "points": pts}
+
+        return {"count": len(out), "sparklines": out}
+    finally:
+        conn.close()
+
+
+# --- Recent Activity context (Phase 3 wiring prep) ---
+def get_workout_context(workout_id: int) -> dict[str, Any]:
+    """Return small, UI-ready context for a workout.
+
+    This is intentionally defensive: enrichment tables/columns may vary across versions.
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    try:
+        wid = int(workout_id)
+
+        # --- Location --------------------------------------------------------
+        location_label = None
+        start_lat = None
+        start_lon = None
+        if _table_exists(conn, "workout_route_context"):
+            rc_cols = _cols(conn, "workout_route_context")
+            # Prefer more specific labels first
+            label_expr = None
+            for c in ("start_location_label", "location_label", "start_locality", "locality", "center_location_label"):
+                if c in rc_cols:
+                    label_expr = c
+                    break
+            select_parts = []
+            if label_expr:
+                select_parts.append(f"COALESCE(NULLIF({label_expr},''), NULLIF(location_label,'')) AS start_location")
+            else:
+                select_parts.append("NULL AS start_location")
+            if "start_lat" in rc_cols:
+                select_parts.append("start_lat")
+            else:
+                select_parts.append("NULL AS start_lat")
+            if "start_lon" in rc_cols:
+                select_parts.append("start_lon")
+            else:
+                select_parts.append("NULL AS start_lon")
+
+            loc = conn.execute(
+                f"""
+                SELECT {", ".join(select_parts)}
+                FROM workout_route_context
+                WHERE workout_id = ?
+                """,
+                (wid,),
+            ).fetchone()
+
+            if loc:
+                location_label = loc["start_location"]
+                start_lat = loc["start_lat"]
+                start_lon = loc["start_lon"]
+
+        # --- Surface ---------------------------------------------------------
+        surface_primary = None
+        if _table_exists(conn, "workout_surface_stats"):
+            surf = conn.execute(
+                """
+                SELECT road_m, paved_path_m, trail_m, track_m, grass_m, rock_m, forest_m, unknown_m
+                FROM workout_surface_stats
+                WHERE workout_id = ?
+                """,
+                (wid,),
+            ).fetchone()
+            if surf:
+                candidates = [
+                    ("road", surf["road_m"]),
+                    ("paved_path", surf["paved_path_m"]),
+                    ("trail", surf["trail_m"]),
+                    ("track", surf["track_m"]),
+                    ("grass", surf["grass_m"]),
+                    ("rock", surf["rock_m"]),
+                    ("forest", surf["forest_m"]),
+                    ("unknown", surf["unknown_m"]),
+                ]
+                best = None
+                for k, v in candidates:
+                    try:
+                        vv = float(v) if v is not None else 0.0
+                    except Exception:
+                        vv = 0.0
+                    if best is None or vv > best[1]:
+                        best = (k, vv)
+                if best and best[1] > 0:
+                    surface_primary = best[0]
+
+                # --- Weather ---------------------------------------------------------
+        # Return a single, UI-ready weather snapshot for the workout.
+        # Rules:
+        #   1) Prefer point_type='start' if present.
+        #   2) Otherwise fall back to earliest obs_time_utc (if present), else any row.
+        #   3) Only reference columns that actually exist (SQLite errors hard if we don't).
+        #   4) Normalize keys so the frontend doesn't need DB schema knowledge.
+        weather = None
+        if _table_exists(conn, "workout_weather"):
+            ww_cols = _cols(conn, "workout_weather")
+
+            def has(col: str) -> bool:
+                return col in ww_cols
+
+            def pick_expr(alias: str, candidates: tuple[str, ...]) -> str | None:
+                present = [c for c in candidates if has(c)]
+                if not present:
+                    return None
+                if len(present) == 1:
+                    return f"{present[0]} AS {alias}"
+                return f"COALESCE({', '.join(present)}) AS {alias}"
+
+            # Prefer start row, then earliest obs_time_utc.
+            order_bits: list[str] = []
+            if has("point_type"):
+                order_bits.append(
+                    "CASE point_type WHEN 'start' THEN 0 WHEN 'center' THEN 1 WHEN 'mid' THEN 1 WHEN 'end' THEN 2 ELSE 3 END"
+                )
+            if has("obs_time_utc"):
+                order_bits.append("obs_time_utc ASC")
+            order_clause = f" ORDER BY {', '.join(order_bits)}" if order_bits else ""
+
+            select_exprs: list[str] = []
+
+            # Core fields (Phase 3 schema)
+            for alias, cols in (
+                ("temp_c", ("start_temp_c", "temp_c", "high_temp_c")),
+                ("wind_kph", ("start_wind_kph", "wind_kph", "high_wind_kph")),
+                ("precip_mm", ("start_precip_mm", "precip_mm", "high_precip_mm")),
+                ("weather_code", ("start_weather_code", "weather_code", "high_weather_code")),
+                ("precip_sum_mm", ("precip_sum_mm",)),
+                ("cloudcover_pct", ("cloudcover_pct",)),
+                ("rel_humidity_pct", ("rel_humidity_pct",)),
+                ("wind_dir_deg", ("wind_dir_deg",)),
+                ("dewpoint_c", ("dewpoint_c",)),
+            ):
+                expr = pick_expr(alias, cols)
+                if expr:
+                    select_exprs.append(expr)
+
+            # Always include these if present (no COALESCE needed)
+            if has("point_type"):
+                select_exprs.append("point_type")
+            if has("obs_time_utc"):
+                select_exprs.append("obs_time_utc")
+            if has("raw_json"):
+                select_exprs.append("raw_json")
+
+            if select_exprs:
+                row = conn.execute(
+                    f"SELECT {', '.join(select_exprs)} FROM workout_weather WHERE workout_id = ?{order_clause} LIMIT 1",
+                    (wid,),
+                ).fetchone()
+
+                if row:
+                    def _as_float(v):
+                        try:
+                            return float(v) if v is not None else None
+                        except Exception:
+                            return None
+
+                    def _as_int(v):
+                        try:
+                            return int(v) if v is not None else None
+                        except Exception:
+                            return None
+
+                    weather_code = _as_int(row["weather_code"]) if "weather_code" in row.keys() else None
+                    cloudcover = _as_float(row["cloudcover_pct"]) if "cloudcover_pct" in row.keys() else None
+
+                    # Only emit a weather object if at least one meaningful value exists.
+                    candidates = [
+                        row["temp_c"] if "temp_c" in row.keys() else None,
+                        row["wind_kph"] if "wind_kph" in row.keys() else None,
+                        row["precip_mm"] if "precip_mm" in row.keys() else None,
+                        weather_code,
+                        cloudcover,
+                    ]
+                    if any(v is not None for v in candidates):
+                        weather = {
+                            "temp_c": _as_float(row["temp_c"]) if "temp_c" in row.keys() else None,
+                            "wind_kph": _as_float(row["wind_kph"]) if "wind_kph" in row.keys() else None,
+                            "precip_mm": _as_float(row["precip_mm"]) if "precip_mm" in row.keys() else None,
+                            "precip_sum_mm": _as_float(row["precip_sum_mm"]) if "precip_sum_mm" in row.keys() else None,
+                            "cloudcover_pct": cloudcover,
+                            "rel_humidity_pct": _as_float(row["rel_humidity_pct"]) if "rel_humidity_pct" in row.keys() else None,
+                            "wind_dir_deg": _as_float(row["wind_dir_deg"]) if "wind_dir_deg" in row.keys() else None,
+                            "dewpoint_c": _as_float(row["dewpoint_c"]) if "dewpoint_c" in row.keys() else None,
+                            "weather_code": weather_code,
+                            "point_type": str(row["point_type"]) if "point_type" in row.keys() and row["point_type"] is not None else None,
+                            "obs_time_utc": str(row["obs_time_utc"]) if "obs_time_utc" in row.keys() and row["obs_time_utc"] is not None else None,
+                            "raw_json": str(row["raw_json"]) if "raw_json" in row.keys() and row["raw_json"] is not None else None,
+                        }
+
+                        # Compatibility aliases (older UI expectations)
+                        weather["cloud_pct"] = weather["cloudcover_pct"]
+                        weather["code"] = weather["weather_code"]
+
+# --- Peaks / POIs (deduped) ------------------------------------------
+        peaks_list: list[dict[str, Any]] = []
+        if _table_exists(conn, "workout_peak_hits"):
+            # NOTE: workout_peak_hits can contain multiple hits for the same named POI (or OSM duplicates).
+            # We dedupe by (name, ele_m) and keep earliest-by-distance.
+            peaks_rows = conn.execute(
+                """
+                SELECT
+                  p.name AS name,
+                  p.ele_m AS ele_m,
+                  wph.distance_m AS distance_m
+                FROM workout_peak_hits wph
+                LEFT JOIN peaks p
+                  ON p.peak_id = COALESCE(wph.peak_id, CAST(wph.peak_osm_id AS TEXT))
+                WHERE wph.workout_id = ?
+                ORDER BY wph.distance_m ASC
+                LIMIT 200
+                """,
+                (wid,),
+            ).fetchall()
+
+            seen: set[tuple[str, Optional[int]]] = set()
+            for r in peaks_rows or []:
+                n = r["name"]
+                if not n:
+                    continue
+                name = str(n).strip()
+                ele_i: Optional[int] = None
+                if r["ele_m"] is not None:
+                    try:
+                        ele_i = int(round(float(r["ele_m"])))
+                    except Exception:
+                        ele_i = None
+
+                key = (name.lower(), ele_i)
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                item: dict[str, Any] = {"name": name}
+                if ele_i is not None:
+                    item["ele_m"] = float(ele_i)
+                if r["distance_m"] is not None:
+                    try:
+                        item["distance_m"] = float(r["distance_m"])
+                    except Exception:
+                        pass
+                peaks_list.append(item)
+
+                if len(peaks_list) >= 25:
+                    break
+
+        return {
+            "workout_id": wid,
+            "location": {"label": location_label, "start_lat": start_lat, "start_lon": start_lon},
+            "surface": {"primary": surface_primary},
+            "weather": weather,
+            "peaks": {"count": len(peaks_list), "items": peaks_list},
+        }
+    finally:
+        conn.close()

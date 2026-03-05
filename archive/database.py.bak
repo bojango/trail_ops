@@ -1,0 +1,332 @@
+from __future__ import annotations
+
+import os
+import sqlite3
+from pathlib import Path
+
+_ENV_DB_PATH = os.environ.get("TRAILOPS_DB_PATH")
+
+
+def _looks_like_trailops_db(db_path: Path) -> bool:
+    if not db_path.exists():
+        return False
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='workouts'"
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+    except Exception:
+        return False
+
+
+def _pick_db_path() -> Path:
+    if _ENV_DB_PATH:
+        return Path(_ENV_DB_PATH).expanduser()
+
+    here = Path(__file__).resolve()
+    root = here.parents[2]  # C:\trail_ops
+    app_dir = here.parents[1]  # C:\trail_ops\app
+    cwd = Path.cwd()
+
+    candidates = [
+        root / "trailops.db",
+        app_dir / "trailops.db",
+        cwd / "trailops.db",
+        cwd / "app" / "trailops.db",
+        root / "data" / "trailops.db",
+    ]
+    for p in candidates:
+        if _looks_like_trailops_db(p):
+            return p
+    return root / "trailops.db"
+
+
+DB_PATH = _pick_db_path()
+
+
+class RowProxy(dict):
+    """SQLite row that supports both dict-style and index-style access.
+
+    Some parts of the codebase use sqlite3.Row['col'], others use row.get('col'),
+    and a few fall back to row[0]. sqlite3.Row does NOT implement .get(), so we
+    use this lightweight proxy everywhere to avoid whack-a-mole failures.
+    """
+
+    __slots__ = ("_values", "_keys")
+
+    def __init__(self, keys, values):
+        super().__init__({k: v for k, v in zip(keys, values)})
+        self._keys = list(keys)
+        self._values = tuple(values)
+
+    def __getitem__(self, key):  # type: ignore[override]
+        if isinstance(key, int):
+            return self._values[key]
+        return super().__getitem__(key)
+
+    def __len__(self) -> int:  # allow len(row) for tuple-like fallbacks
+        return len(self._values)
+
+    def as_tuple(self) -> tuple:
+        return self._values
+
+
+def _row_factory(cursor: sqlite3.Cursor, row: tuple) -> RowProxy:
+    keys = [d[0] for d in (cursor.description or [])]
+    return RowProxy(keys, row)
+
+
+def get_connection() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = _row_factory
+    return conn
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def _cols(conn: sqlite3.Connection, table: str) -> set[str]:
+    if not _table_exists(conn, table):
+        return set()
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return {r["name"] for r in rows}
+
+
+def _add_col(conn: sqlite3.Connection, table: str, col: str, col_def: str) -> None:
+    if col in _cols(conn, table):
+        return
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
+
+
+def init_db() -> None:
+    """Idempotent schema initializer + lightweight migrator for TrailOps.
+
+    Note: core ingestion tables like `workouts` are not created here.
+    """
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+
+        # --- Route context ---
+        cur.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS workout_route_context (
+                workout_id INTEGER PRIMARY KEY
+            )
+            '''
+        )
+        # Ensure required columns exist (migrate older schemas)
+        _add_col(conn, "workout_route_context", "start_lat", "REAL")
+        _add_col(conn, "workout_route_context", "start_lon", "REAL")
+        _add_col(conn, "workout_route_context", "center_lat", "REAL")
+        _add_col(conn, "workout_route_context", "center_lon", "REAL")
+        _add_col(conn, "workout_route_context", "location_label", "TEXT")
+        _add_col(conn, "workout_route_context", "locality", "TEXT")
+        _add_col(conn, "workout_route_context", "district", "TEXT")
+        _add_col(conn, "workout_route_context", "county", "TEXT")
+        _add_col(conn, "workout_route_context", "region", "TEXT")
+        _add_col(conn, "workout_route_context", "country", "TEXT")
+        _add_col(conn, "workout_route_context", "country_code", "TEXT")
+        _add_col(conn, "workout_route_context", "provider", "TEXT")
+        _add_col(conn, "workout_route_context", "geocode_version", "TEXT")
+        _add_col(conn, "workout_route_context", "raw_json", "TEXT")
+        # Newer optional columns (safe additive migration)
+        for col, typ in [
+            ("start_location_label", "TEXT"),
+            ("start_locality", "TEXT"),
+            ("start_suburb", "TEXT"),
+            ("start_region", "TEXT"),
+            ("start_country", "TEXT"),
+            ("start_country_code", "TEXT"),
+            ("center_location_label", "TEXT"),
+            ("center_locality", "TEXT"),
+            ("center_suburb", "TEXT"),
+            ("center_region", "TEXT"),
+            ("center_country", "TEXT"),
+            ("center_country_code", "TEXT"),
+            ("computed_at", "TEXT"),
+        ]:
+            _add_col(conn, "workout_route_context", col, typ)
+
+
+        # --- Surface stats ---
+        cur.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS workout_surface_stats (
+                workout_id INTEGER PRIMARY KEY
+            )
+            '''
+        )
+        for col, typ in [
+            ("road_m", "REAL"),
+            ("paved_path_m", "REAL"),
+            ("trail_m", "REAL"),
+            ("track_m", "REAL"),
+            ("grass_m", "REAL"),
+            ("rock_m", "REAL"),
+            ("forest_m", "REAL"),
+            ("unknown_m", "REAL"),
+            ("detail_json", "TEXT"),
+            ("provider", "TEXT"),
+            ("surface_version", "TEXT"),
+            ("raw_json", "TEXT"),
+        ]:
+            _add_col(conn, "workout_surface_stats", col, typ)
+
+        # --- Peaks dimension ---
+        cur.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS peaks (
+                peak_id TEXT PRIMARY KEY,
+                name TEXT,
+                lat REAL,
+                lon REAL,
+                ele_m REAL,
+                wikidata TEXT,
+                wikipedia TEXT,
+                source TEXT,
+                tags_json TEXT
+            )
+            '''
+        )
+
+        # --- Peak hits (migrate old naming) ---
+        if not _table_exists(conn, "workout_peak_hits"):
+            cur.execute(
+                '''
+                CREATE TABLE workout_peak_hits (
+                    workout_id INTEGER,
+                    peak_id TEXT,
+                    distance_m REAL,
+                    PRIMARY KEY (workout_id, peak_id)
+                )
+                '''
+            )
+        else:
+            c = _cols(conn, "workout_peak_hits")
+            # Ensure distance_m
+            if "distance_m" not in c:
+                _add_col(conn, "workout_peak_hits", "distance_m", "REAL")
+            # Ensure peak_id exists; if old column exists, add new and copy
+            if "peak_id" not in c:
+                _add_col(conn, "workout_peak_hits", "peak_id", "TEXT")
+                # Try common legacy column names to migrate from
+                legacy = None
+                for cand in ("osm_id", "peak_osm_id", "node_id", "peak_node_id"):
+                    if cand in c:
+                        legacy = cand
+                        break
+                if legacy:
+                    conn.execute(f"UPDATE workout_peak_hits SET peak_id = {legacy} WHERE peak_id IS NULL")
+            # Ensure composite PK isn't enforceable via ALTER easily; we accept current PK if different.
+
+        # --- Weather ---
+        if not _table_exists(conn, "workout_weather"):
+            cur.execute(
+                '''
+                CREATE TABLE workout_weather (
+                    workout_id INTEGER,
+                    point_type TEXT,
+                    lat REAL,
+                    lon REAL,
+                    ele_m REAL,
+                    obs_time_utc TEXT,
+                    temp_c REAL,
+                    wind_kph REAL,
+                    precip_mm REAL,
+                    weather_code INTEGER,
+                    precip_sum_mm REAL,
+                    moon_phase REAL,
+                    moon_illumination REAL,
+                    provider TEXT,
+                    raw_json TEXT,
+                    PRIMARY KEY (workout_id, point_type)
+                )
+                '''
+            )
+        else:
+            for col, typ in [
+                ("point_type", "TEXT"),
+                ("lat", "REAL"),
+                ("lon", "REAL"),
+                ("ele_m", "REAL"),
+                ("obs_time_utc", "TEXT"),
+                ("temp_c", "REAL"),
+                ("wind_kph", "REAL"),
+                ("precip_mm", "REAL"),
+                ("weather_code", "INTEGER"),
+                ("precip_sum_mm", "REAL"),
+                ("moon_phase", "REAL"),
+                ("moon_illumination", "REAL"),
+                ("provider", "TEXT"),
+                ("raw_json", "TEXT"),
+                ("cloudcover_pct", "REAL"),
+                ("rel_humidity_pct", "REAL"),
+                ("wind_dir_deg", "REAL"),
+                ("dewpoint_c", "REAL"),
+            ]:
+                if col not in _cols(conn, "workout_weather"):
+                    _add_col(conn, "workout_weather", col, typ)
+
+
+        # --- Per-point weather table (robust) ---
+        # The legacy `workout_weather` table in many existing DBs uses workout_id as PRIMARY KEY,
+        # which collapses multiple point_types (start/high/mid/etc.) into a single row.
+        # We keep that table for backwards compatibility, but store detailed per-point rows here.
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS workout_weather_points (
+                workout_id INTEGER NOT NULL,
+                point_type TEXT NOT NULL,
+                lat REAL,
+                lon REAL,
+                ele_m REAL,
+                obs_time_utc TEXT,
+                temp_c REAL,
+                wind_kph REAL,
+                precip_mm REAL,
+                weather_code INTEGER,
+                precip_sum_mm REAL,
+                cloudcover_pct REAL,
+                rel_humidity_pct REAL,
+                wind_dir_deg REAL,
+                dewpoint_c REAL,
+                moon_phase REAL,
+                moon_illumination REAL,
+                provider TEXT,
+                raw_json TEXT,
+                PRIMARY KEY (workout_id, point_type),
+                FOREIGN KEY (workout_id) REFERENCES workouts(id)
+                    ON UPDATE CASCADE
+                    ON DELETE CASCADE
+            )
+            """
+        )
+
+        # Ensure new columns exist if the table already existed from a prior run
+        for col, typ in [
+            ("cloudcover_pct", "REAL"),
+            ("rel_humidity_pct", "REAL"),
+            ("wind_dir_deg", "REAL"),
+            ("dewpoint_c", "REAL"),
+            ("precip_sum_mm", "REAL"),
+            ("moon_phase", "REAL"),
+            ("moon_illumination", "REAL"),
+            ("provider", "TEXT"),
+            ("raw_json", "TEXT"),
+        ]:
+            if col not in _cols(conn, "workout_weather_points"):
+                _add_col(conn, "workout_weather_points", col, typ)
+
+        conn.commit()
+    finally:
+        conn.close()

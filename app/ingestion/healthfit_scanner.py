@@ -7,9 +7,7 @@ from typing import Iterable, Literal
 
 import sqlite3
 
-from db.database import get_connection
-
-
+from app.db.database import get_connection
 FileType = Literal["fit", "gpx", "csv"]
 
 

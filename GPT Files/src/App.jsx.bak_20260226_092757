@@ -1,0 +1,667 @@
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import {
+  ResponsiveContainer,
+  ComposedChart,
+  Bar,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  CartesianGrid,
+} from "recharts";
+import "react-day-picker/style.css";
+import "./styles.css";
+import { DayPicker } from "react-day-picker";
+
+import { fetchHealth, fetchWorkouts } from "./api";
+
+// --- Units / formatting ------------------------------------------------------
+
+const M_TO_MI = 0.000621371;
+const M_TO_FT = 3.28084;
+
+const nf0 = new Intl.NumberFormat("en-GB", { maximumFractionDigits: 0 });
+const nf1 = new Intl.NumberFormat("en-GB", {
+  maximumFractionDigits: 1,
+  minimumFractionDigits: 1,
+});
+
+function clampNum(x) {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function isoDate(d) {
+  return d.toISOString().slice(0, 10);
+}
+
+function fmtMonospace(ts) {
+  if (!ts) return "";
+  return String(ts).slice(0, 16).replace("T", " ");
+}
+
+// --- Presets -----------------------------------------------------------------
+
+const RANGE_PRESETS = [
+  { key: "last7", label: "Last 7 days", kind: "days", days: 7 },
+  { key: "last14", label: "Last 14 days", kind: "days", days: 14 },
+  { key: "wtd", label: "Week to date", kind: "wtd" },
+  { key: "lastweek", label: "Last week", kind: "lastWeek" },
+  { key: "mtd", label: "Month to date", kind: "mtd" },
+  { key: "lastmonth", label: "Last month", kind: "lastMonth" },
+];
+
+const SPORT_CHIP_OPTIONS = [
+  { key: "all", label: "All" },
+  { key: "run", label: "Run" },
+  { key: "walk", label: "Walk" },
+  { key: "hike", label: "Hike" },
+  { key: "cycle", label: "Cycle" },
+  { key: "strength", label: "Strength" },
+  { key: "hiit", label: "HIIT" },
+  { key: "stair", label: "Stair climber" },
+];
+
+// Your exact naming map (client-side for now)
+function displaySportType(raw) {
+  const s = String(raw || "").toLowerCase();
+  const map = {
+    "running:generic": "Running (outdoor)",
+    "walking:generic": "Walking (outdoor)",
+    "62:70": "HIIT",
+    "cycling:indoor_cycling": "Cycling (indoor)",
+    "fitness_equipment:stair_climbing": "Stair Climber",
+    "generic:generic": "Cooldown",
+    "running:indoor_running": "Running (indoor)",
+    "training:strength_training": "Strength Training",
+    "walking:indoor_walking": "Walking (indoor)",
+  };
+  return map[s] || raw || "Unknown";
+}
+
+// NOTE: API currently supports a single sport string or "all".
+// For the UX you want (All/Run/Walk/etc), we keep the API call broad
+// and filter client-side until we add category support server-side.
+function sportMatchesChip(chipKey, rawSportType) {
+  if (!chipKey || chipKey === "all") return true;
+  const t = String(rawSportType || "").toLowerCase();
+  if (chipKey === "run") return t.startsWith("running:");
+  if (chipKey === "walk") return t.startsWith("walking:");
+  if (chipKey === "hike") return t.startsWith("hiking:");
+  if (chipKey === "cycle") return t.startsWith("cycling:");
+  if (chipKey === "strength") return t === "training:strength_training";
+  if (chipKey === "hiit") return t === "62:70";
+  if (chipKey === "stair") return t === "fitness_equipment:stair_climbing";
+  return true;
+}
+
+function startOfWeek(d) {
+  const x = new Date(d);
+  const day = (x.getDay() + 6) % 7; // Monday=0
+  x.setDate(x.getDate() - day);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+function startOfMonth(d) {
+  const x = new Date(d);
+  x.setDate(1);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+function endOfLastWeek(today) {
+  const sow = startOfWeek(today);
+  const end = new Date(sow);
+  end.setDate(end.getDate() - 1);
+  end.setHours(23, 59, 59, 999);
+  return end;
+}
+function startOfLastWeek(today) {
+  const e = endOfLastWeek(today);
+  return startOfWeek(e);
+}
+function endOfLastMonth(today) {
+  const som = startOfMonth(today);
+  const end = new Date(som);
+  end.setDate(0);
+  end.setHours(23, 59, 59, 999);
+  return end;
+}
+function startOfLastMonth(today) {
+  const e = endOfLastMonth(today);
+  return startOfMonth(e);
+}
+
+// --- Helpers -----------------------------------------------------------------
+
+function groupDaily(items) {
+  const map = new Map();
+  for (const w of items) {
+    const ts = String(w.start_time || "");
+    const day = ts.slice(0, 10) || "unknown";
+    const cur = map.get(day) || { day, distMi: 0, elevFt: 0, workouts: 0 };
+    cur.distMi += clampNum(w.distance_m) * M_TO_MI;
+    cur.elevFt += clampNum(w.elevation_gain_m) * M_TO_FT;
+    cur.workouts += 1;
+    map.set(day, cur);
+  }
+  return Array.from(map.values()).sort((a, b) => (a.day < b.day ? -1 : 1));
+}
+
+function SparkTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null;
+  const d = payload[0]?.payload || {};
+  return (
+    <div className="tip">
+      <div className="tipTitle">{label}</div>
+      <div className="tipRow">
+        <span className="k">Distance</span>
+        <span className="v">{nf1.format(d.distMi || 0)} mi</span>
+      </div>
+      <div className="tipRow">
+        <span className="k">Elevation</span>
+        <span className="v">{nf0.format(d.elevFt || 0)} ft</span>
+      </div>
+      <div className="tipRow">
+        <span className="k">Workouts</span>
+        <span className="v">{nf0.format(d.workouts || 0)}</span>
+      </div>
+    </div>
+  );
+}
+
+function useOnClickOutside(ref, handler) {
+  useEffect(() => {
+    function listener(e) {
+      if (!ref.current || ref.current.contains(e.target)) return;
+      handler(e);
+    }
+    document.addEventListener("mousedown", listener);
+    document.addEventListener("touchstart", listener);
+    return () => {
+      document.removeEventListener("mousedown", listener);
+      document.removeEventListener("touchstart", listener);
+    };
+  }, [ref, handler]);
+}
+
+// --- App ---------------------------------------------------------------------
+
+export default function App() {
+  const today = useMemo(() => new Date(), []);
+
+  // Defaults
+  const [preset, setPreset] = useState("last7");
+  const [sportChip, setSportChip] = useState("all");
+
+  const [start, setStart] = useState(() => {
+    const d = new Date(today);
+    d.setDate(d.getDate() - 6);
+    return isoDate(d);
+  });
+  const [end, setEnd] = useState(() => isoDate(today));
+
+  // API state
+  const [health, setHealth] = useState(null);
+  const [healthErr, setHealthErr] = useState(null);
+  const [data, setData] = useState(null);
+  const [dataErr, setDataErr] = useState(null);
+
+  // Popovers
+  const [rangeOpen, setRangeOpen] = useState(false);
+  const [sportOpen, setSportOpen] = useState(false);
+  const rangeRef = useRef(null);
+  const sportRef = useRef(null);
+  useOnClickOutside(rangeRef, () => setRangeOpen(false));
+  useOnClickOutside(sportRef, () => setSportOpen(false));
+
+  // Custom range picker state
+  const [customRange, setCustomRange] = useState(() => ({
+    from: new Date(start),
+    to: new Date(end),
+  }));
+
+  // Apply presets to (start,end)
+  useEffect(() => {
+    const p = RANGE_PRESETS.find((x) => x.key === preset);
+    if (!p) return;
+
+    const t = new Date(today);
+    let s;
+    let e = new Date(t);
+
+    if (p.kind === "days") {
+      s = new Date(t);
+      s.setDate(s.getDate() - (p.days - 1));
+    } else if (p.kind === "wtd") {
+      s = startOfWeek(t);
+    } else if (p.kind === "lastWeek") {
+      s = startOfLastWeek(t);
+      e = endOfLastWeek(t);
+    } else if (p.kind === "mtd") {
+      s = startOfMonth(t);
+    } else if (p.kind === "lastMonth") {
+      s = startOfLastMonth(t);
+      e = endOfLastMonth(t);
+    } else {
+      return;
+    }
+
+    setStart(isoDate(s));
+    setEnd(isoDate(e));
+    setCustomRange({ from: s, to: e });
+  }, [preset, today]);
+
+  useEffect(() => {
+    fetchHealth().then(setHealth).catch(setHealthErr);
+  }, []);
+
+  useEffect(() => {
+    setDataErr(null);
+    // We fetch "all" then filter client-side for now.
+    fetchWorkouts({ start, end, sport: "all", limit: 300 })
+      .then(setData)
+      .catch(setDataErr);
+  }, [start, end]);
+
+  const itemsRaw = data?.items || [];
+  const items = useMemo(
+    () => itemsRaw.filter((w) => sportMatchesChip(sportChip, w.sport_type)),
+    [itemsRaw, sportChip]
+  );
+
+  const daily = useMemo(() => groupDaily(items), [items]);
+
+  const distMi = items.reduce((a, w) => a + clampNum(w.distance_m) * M_TO_MI, 0);
+  const elevFt = items.reduce((a, w) => a + clampNum(w.elevation_gain_m) * M_TO_FT, 0);
+  const durHr = items.reduce((a, w) => a + clampNum(w.duration_s) / 3600, 0);
+  const mostRecent = items[0] || null;
+
+  const topSportLabel = useMemo(() => {
+    const opt = SPORT_CHIP_OPTIONS.find((x) => x.key === sportChip);
+    return opt ? opt.label : "All";
+  }, [sportChip]);
+
+  function applyCustomRange() {
+    const from = customRange?.from;
+    const to = customRange?.to;
+    if (!from || !to) return;
+    setPreset("custom");
+    setStart(isoDate(from));
+    setEnd(isoDate(to));
+    setRangeOpen(false);
+  }
+
+  return (
+    <div className="mc">
+      <header className="mcTop">
+        <div className="brand">
+          <div className="logo" aria-hidden="true">
+            <div className="dot" />
+          </div>
+          <div className="brandText">
+            <div className="brandTitle">TRAILOPS</div>
+            <div className="brandSub">Mission console • local-first • private</div>
+          </div>
+        </div>
+
+        <div className="topFilters">
+          {/* RANGE chip */}
+          <div className="chipWrap" ref={rangeRef}>
+            <button
+              className={"chip accent btnChip " + (rangeOpen ? "open" : "")}
+              onClick={() => setRangeOpen((v) => !v)}
+              aria-expanded={rangeOpen}
+              title="Change date range"
+            >
+              <span className="chipK">RANGE</span>
+              <span className="chipV">
+                {start} → {end}
+              </span>
+              <span className="chev" aria-hidden="true">
+                ▾
+              </span>
+            </button>
+
+            {rangeOpen && (
+              <div className="popover popRange">
+                <div className="popHdr">DATE RANGE</div>
+
+                <div className="popSection">
+                  <div className="popLab">Presets</div>
+                  <div className="popList">
+                    {RANGE_PRESETS.map((p) => (
+                      <button
+                        key={p.key}
+                        className={"popItem " + (preset === p.key ? "active" : "")}
+                        onClick={() => {
+                          setPreset(p.key);
+                          setRangeOpen(false);
+                        }}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="popSection">
+                  <div className="popLab">Custom</div>
+                  <div className="calWrap">
+                    <DayPicker
+                      mode="range"
+                      selected={customRange}
+                      onSelect={setCustomRange}
+                      numberOfMonths={1}
+                      captionLayout="dropdown"
+                    />
+                    <div className="calFoot">
+                      <div className="calVals mono">
+                        <span>{customRange?.from ? isoDate(customRange.from) : "start"}</span>
+                        <span className="dot">•</span>
+                        <span>{customRange?.to ? isoDate(customRange.to) : "end"}</span>
+                      </div>
+                      <button
+                        className="pillBtn"
+                        onClick={applyCustomRange}
+                        disabled={!customRange?.from || !customRange?.to}
+                      >
+                        Apply
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* SPORT chip */}
+          <div className="chipWrap" ref={sportRef}>
+            <button
+              className={"chip btnChip " + (sportOpen ? "open" : "")}
+              onClick={() => setSportOpen((v) => !v)}
+              aria-expanded={sportOpen}
+              title="Filter by sport"
+            >
+              <span className="chipK">SPORT</span>
+              <span className="chipV">{topSportLabel.toUpperCase()}</span>
+              <span className="chev" aria-hidden="true">
+                ▾
+              </span>
+            </button>
+
+            {sportOpen && (
+              <div className="popover popSport">
+                <div className="popHdr">SPORT</div>
+                <div className="popList">
+                  {SPORT_CHIP_OPTIONS.map((o) => (
+                    <button
+                      key={o.key}
+                      className={"popItem " + (sportChip === o.key ? "active" : "")}
+                      onClick={() => {
+                        setSportChip(o.key);
+                        setSportOpen(false);
+                      }}
+                    >
+                      {o.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className={"chip " + (health ? "ok" : "warn")}
+               title={health ? "API reachable" : "API not reachable"}>
+            <span className="chipK">API</span>
+            <span className="chipV">{health ? "OK" : "DOWN"}</span>
+          </div>
+
+          <div className="chip">
+            <span className="chipK">MODE</span>
+            <span className="chipV">LOCAL</span>
+          </div>
+        </div>
+      </header>
+
+      {/* KPI row (ordered as requested) */}
+      <section className="kpiRow">
+        <div className="kpi hoverGlow">
+          <div className="kpiK">TIME ON FEET</div>
+          <div className="kpiV">
+            {nf1.format(durHr)}
+            <span className="kpiUnit"> hr</span>
+          </div>
+          <div className="kpiHint">range</div>
+          <div className="kpiHelp">Total duration across the selected range.</div>
+        </div>
+
+        <div className="kpi hoverGlow">
+          <div className="kpiK">DISTANCE</div>
+          <div className="kpiV">
+            {nf1.format(distMi)}
+            <span className="kpiUnit"> mi</span>
+          </div>
+          <div className="kpiHint">range</div>
+          <div className="kpiHelp">Total distance across the selected range.</div>
+        </div>
+
+        <div className="kpi hoverGlow">
+          <div className="kpiK">ELEVATION GAIN</div>
+          <div className="kpiV">
+            {nf0.format(elevFt)}
+            <span className="kpiUnit"> ft</span>
+          </div>
+          <div className="kpiHint">range</div>
+          <div className="kpiHelp">Total elevation gain across the selected range.</div>
+        </div>
+
+        <div className="kpi hoverGlow">
+          <div className="kpiK">VO2 MAX</div>
+          <div className="kpiV">—</div>
+          <div className="kpiHint muted">placeholder</div>
+          <div className="kpiHelp">Estimated aerobic fitness. We’ll wire this later.</div>
+        </div>
+
+        <div className="kpi hoverGlow">
+          <div className="kpiK">RESTING HEART RATE</div>
+          <div className="kpiV">—</div>
+          <div className="kpiHint muted">placeholder</div>
+          <div className="kpiHelp">Resting HR trend. Needs an endpoint later.</div>
+        </div>
+
+        <div className="kpi hoverGlow">
+          <div className="kpiK">WORKOUTS</div>
+          <div className="kpiV">{nf0.format(items.length)}</div>
+          <div className="kpiHint okDot">loaded</div>
+          <div className="kpiHelp">Count of workouts in the selected range.</div>
+        </div>
+      </section>
+
+      <section className="alerts">
+        <div className="alertsLeft">
+          <span className="badge">ALERTS & ANOMALIES</span>
+          <span className="alertsHint">Stub. This becomes interactive later.</span>
+        </div>
+        <div className="alertsRight">
+          <span className="pill warn">LOAD elevated</span>
+          <span className="pill muted">HR DRIFT on climbs</span>
+          <span className="pill ok">RHR stable</span>
+        </div>
+      </section>
+
+      <section className="mainGrid">
+        <div className="panel span2">
+          <div className="panelHdr">
+            <div className="panelTitle">PRIMARY TELEMETRY</div>
+            <div className="panelSub">
+              Distance by day (line) + elevation by day (bars). More modes later.
+            </div>
+          </div>
+
+          <div className="chartWrap">
+            <ResponsiveContainer width="100%" height={320}>
+              <ComposedChart data={daily}>
+                <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
+                <XAxis
+                  dataKey="day"
+                  tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 12 }}
+                />
+                <YAxis yAxisId="left" tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 12 }} />
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 12 }}
+                />
+                <Tooltip content={<SparkTooltip />} />
+                <Bar yAxisId="right" dataKey="elevFt" fill="rgba(255,138,31,0.35)" />
+                <Line
+                  yAxisId="left"
+                  type="monotone"
+                  dataKey="distMi"
+                  stroke="rgba(255,255,255,0.78)"
+                  strokeWidth={2}
+                  dot={false}
+                />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div className="panelFoot">
+            {dataErr ? (
+              <span className="err">Failed to load workouts: {String(dataErr.message || dataErr)}</span>
+            ) : (
+              <span className="mutedLine">
+                Showing {nf0.format(items.length)} workouts • {nf0.format(daily.length)} days • Sport: {topSportLabel.toLowerCase()}
+              </span>
+            )}
+            {healthErr && (
+              <span className="err">API health check failed: {String(healthErr.message || healthErr)}</span>
+            )}
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="panelHdr">
+            <div className="panelTitle">RECENT ACTIVITY</div>
+            <div className="panelSub">Most recent workout in current range</div>
+          </div>
+
+          {mostRecent ? (
+            <div className="recent">
+              <div className="recentTop">
+                <div className="recentName">{displaySportType(mostRecent.sport_type)}</div>
+                <div className="recentTag mono">#{mostRecent.id}</div>
+              </div>
+              <div className="recentMeta mono">{fmtMonospace(mostRecent.start_time)}</div>
+
+              <div className="miniStats">
+                <div className="mini">
+                  <div className="k">Distance</div>
+                  <div className="v">{nf1.format(clampNum(mostRecent.distance_m) * M_TO_MI)} mi</div>
+                </div>
+                <div className="mini">
+                  <div className="k">Time</div>
+                  <div className="v">{nf0.format(Math.round(clampNum(mostRecent.duration_s) / 60))} min</div>
+                </div>
+                <div className="mini">
+                  <div className="k">Elevation</div>
+                  <div className="v">{nf0.format(Math.round(clampNum(mostRecent.elevation_gain_m) * M_TO_FT))} ft</div>
+                </div>
+              </div>
+
+              {/* Map placeholder: we wire real route data in Phase 2B */}
+              <div className="mapStub">
+                <div className="mapStubHdr">ROUTE MAP</div>
+                <div className="mapStubBody">Map comes next (Phase 2B). No need to “rebuild” logic, just a new renderer.</div>
+              </div>
+
+              <div className="recentBtns">
+                <button className="btn" disabled>
+                  OPEN ACTIVITY
+                </button>
+                <button className="btn ghost" disabled>
+                  EXPLAIN
+                </button>
+              </div>
+
+              <div className="coachSummary">
+                <div className="coachLabel">COACH SUMMARY</div>
+                <div className="coachText">Placeholder. This will be filled by the coach later.</div>
+              </div>
+            </div>
+          ) : (
+            <div className="empty">No workouts in range.</div>
+          )}
+        </div>
+
+        <div className="panel coach">
+          <div className="panelHdr">
+            <div className="panelTitle">AI COACH</div>
+            <div className="panelSub">Placeholder shell. We wire chat + actions later.</div>
+          </div>
+
+          <div className="coachBody">
+            <div className="coachMsg sys">
+              <div className="mono">System:</div>
+              <div className="mutedLine">Coach will drive filters and query panels through the API.</div>
+            </div>
+
+            <div className="coachMsg user">
+              <div className="mono">You:</div>
+              <div className="mutedLine">“Show last 14 days and focus on distance.”</div>
+            </div>
+
+            <div className="coachMsg coach">
+              <div className="mono">Coach:</div>
+              <div className="mutedLine">
+                Switching range preset to <b>Last 14 days</b>.
+              </div>
+              <button className="pillBtn" onClick={() => setPreset("last14")}>
+                Apply
+              </button>
+            </div>
+          </div>
+
+          <div className="coachInput">
+            <input
+              placeholder="Ask: 'show GAP monthly' • 'surface last 12' • 'HR drift on climbs'"
+              disabled
+            />
+            <button className="send" disabled>
+              SEND
+            </button>
+          </div>
+        </div>
+
+        <div className="panel span2">
+          <div className="panelHdr">
+            <div className="panelTitle">RECENT WORKOUTS</div>
+            <div className="panelSub">Fixed height + scroll. Activities page later.</div>
+          </div>
+
+          <div className="list scrollList">
+            {items.slice(0, 50).map((w) => (
+              <div key={w.id} className="row">
+                <div className="rowMain">
+                  <div className="rowTop">
+                    <span className="mono">{fmtMonospace(w.start_time)}</span>
+                    <span className="pill">{displaySportType(w.sport_type)}</span>
+                  </div>
+                  <div className="rowSub">
+                    <span>{nf1.format(clampNum(w.distance_m) * M_TO_MI)} mi</span>
+                    <span className="dot">•</span>
+                    <span>{nf0.format(Math.round(clampNum(w.duration_s) / 60))} min</span>
+                    <span className="dot">•</span>
+                    <span>{nf0.format(Math.round(clampNum(w.elevation_gain_m) * M_TO_FT))} ft</span>
+                  </div>
+                </div>
+                <div className="rowId mono">#{w.id}</div>
+              </div>
+            ))}
+            {!data && !dataErr && <div className="mutedLine">Loading…</div>}
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
