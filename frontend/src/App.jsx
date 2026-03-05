@@ -402,7 +402,7 @@ function formatWeather(w) {
   if (t != null && Number.isFinite(Number(t))) parts.push(`${Math.round(Number(t))}°C`);
   if (wind != null && Number.isFinite(Number(wind))) parts.push(`${Math.round(Number(wind))}kph`);
   if (rain != null && Number.isFinite(Number(rain))) parts.push(Number(rain) >= 2 ? "heavy rain" : Number(rain) > 0.2 ? "rain" : "dry");
-  return parts.length ? parts.join(" * ") : """";
+  return parts.length ? parts.join(" * ") : "";
 }
 
 
@@ -553,7 +553,7 @@ function CtxPill({ kind, icon, label, value }) {
     <div className={`ctxPill ctxPill--${kind}`}>
       <span className="ctxI">{icon}</span>
       <span className="ctxL">{label}</span>
-      <span className="ctxV">{value || """"}</span>
+      <span className="ctxV">{value || ""}</span>
     </div>
   );
 }
@@ -1493,7 +1493,7 @@ useEffect(() => {
               <div style={{ display: "flex", alignItems: "center", gap: 10, justifyContent: "space-between" }}>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: 0.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    {recentSelected ? displaySportType(recentSelected.sport_type) : """"}
+                    {recentSelected ? displaySportType(recentSelected.sport_type) : ""}
                   </div>
                 </div>
 
@@ -1559,7 +1559,7 @@ useEffect(() => {
                         kind="weather"
                         icon={<WeatherIcon kind={weatherKind(recentCtx?.weather)} />}
                         label="Weather"
-                        value={recentCtx?.weather ? formatWeather(recentCtx.weather) : """"}
+                        value={recentCtx?.weather ? formatWeather(recentCtx.weather) : ""}
                       />
                       {formatMoon(recentCtx?.weather?.moon_phase_name, recentCtx?.weather?.moon_illumination) ? (
                         <CtxPill
@@ -1609,15 +1609,15 @@ useEffect(() => {
                     </div>
                     <div className="mini">
                       <div className="k">Avg HR</div>
-                      <div className="v">{Number.isFinite(avgHr) && avgHr > 0 ? `${nf0.format(Math.round(avgHr))} bpm` : """"}</div>
+                      <div className="v">{Number.isFinite(avgHr) && avgHr > 0 ? `${nf0.format(Math.round(avgHr))} bpm` : ""}</div>
                     </div>
                     <div className="mini">
                       <div className="k">Avg moving pace</div>
-                      <div className="v">{Number.isFinite(movingPace) && movingPace > 0 ? `${formatPace(movingPace)}/mi` : """"}</div>
+                      <div className="v">{Number.isFinite(movingPace) && movingPace > 0 ? `${formatPace(movingPace)}/mi` : ""}</div>
                     </div>
                     <div className="mini">
                       <div className="k">Avg GAP</div>
-                      <div className="v">{Number.isFinite(avgGap) && avgGap > 0 ? `${formatPace(avgGap)}/mi` : """"}</div>
+                      <div className="v">{Number.isFinite(avgGap) && avgGap > 0 ? `${formatPace(avgGap)}/mi` : ""}</div>
                     </div>
                   </div>
                 );

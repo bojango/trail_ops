@@ -14974,3 +14974,27 @@
 [2026-03-05 10:01:41] Sync complete: discovered=6805 new_inserted=0
 [2026-03-05 10:01:44] FIT ingest complete: candidates=0 inserted=0 updated=0 skipped_missing=0 skipped_parse_error=0 samples_written=0
 [2026-03-05 10:01:44] === Auto ingest run finished OK ===
+[2026-03-05 10:06:39] === Auto ingest run starting ===
+[2026-03-05 10:06:39] HealthFit dir: C:\Users\calum\iCloudDrive\iCloud~com~altifondo~HealthFit
+[2026-03-05 10:06:39] DB path: C:\trail_ops\data\trailops.db
+[2026-03-05 10:06:44] Sync complete: discovered=6805 new_inserted=0
+[2026-03-05 10:06:48] FIT ingest complete: candidates=0 inserted=0 updated=0 skipped_missing=0 skipped_parse_error=0 samples_written=0
+[2026-03-05 10:06:48] === Auto ingest run finished OK ===
+[2026-03-05 10:11:38] === Auto ingest run starting ===
+[2026-03-05 10:11:38] HealthFit dir: C:\Users\calum\iCloudDrive\iCloud~com~altifondo~HealthFit
+[2026-03-05 10:11:38] DB path: C:\trail_ops\data\trailops.db
+[2026-03-05 10:11:40] Sync complete: discovered=6805 new_inserted=0
+[2026-03-05 10:11:43] FIT ingest complete: candidates=0 inserted=0 updated=0 skipped_missing=0 skipped_parse_error=0 samples_written=0
+[2026-03-05 10:11:43] === Auto ingest run finished OK ===
+[2026-03-05 10:16:38] === Auto ingest run starting ===
+[2026-03-05 10:16:38] HealthFit dir: C:\Users\calum\iCloudDrive\iCloud~com~altifondo~HealthFit
+[2026-03-05 10:16:38] DB path: C:\trail_ops\data\trailops.db
+[2026-03-05 10:16:40] Sync complete: discovered=6805 new_inserted=0
+[2026-03-05 10:16:43] FIT ingest complete: candidates=0 inserted=0 updated=0 skipped_missing=0 skipped_parse_error=0 samples_written=0
+[2026-03-05 10:16:43] === Auto ingest run finished OK ===
+[2026-03-05 10:21:38] === Auto ingest run starting ===
+[2026-03-05 10:21:38] HealthFit dir: C:\Users\calum\iCloudDrive\iCloud~com~altifondo~HealthFit
+[2026-03-05 10:21:38] DB path: C:\trail_ops\data\trailops.db
+[2026-03-05 10:21:40] Sync complete: discovered=6805 new_inserted=0
+[2026-03-05 10:21:41] FIT ingest complete: candidates=0 inserted=0 updated=0 skipped_missing=0 skipped_parse_error=0 samples_written=0
+[2026-03-05 10:21:41] === Auto ingest run finished OK ===
